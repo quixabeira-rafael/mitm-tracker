@@ -227,6 +227,24 @@ mitm-tracker release --older-than 7d              # 7-day window
 The active session and any session with a running mitmdump are always
 preserved.
 
+### Visual status in the macOS menu bar
+
+```bash
+pipx install -e ".[tray]"   # one-time: enable the optional rumps dep
+mitm-tracker tray           # opens an indicator in the menu bar
+```
+
+The icon mirrors the daemon state:
+
+- 🟢 green — `mitmdump` is running and healthy
+- 🔴 red — not recording
+- 🟡 yellow — zombie state (`state.json` says running, but the PID is dead);
+  run `record stop` to clean up
+
+Click the icon to see the active profile, workspace path, and live PID/port,
+and to start/stop the record without leaving the menu bar. The tray itself
+is foreground — closing it does not stop the proxy.
+
 ---
 
 ## Command reference
@@ -239,6 +257,7 @@ mitm-tracker cert    {install,status,simulators}
 mitm-tracker record  {start,stop,status,logs}
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
+mitm-tracker tray    [--interval 2.0]                # macOS menu bar status indicator (extra: [tray])
 ```
 
 Every subcommand accepts `--json` and returns a predictable structured
