@@ -98,8 +98,21 @@ def test_start_creates_session_and_writes_state(
 
     cmd = patched_environment["captured_cmd"][0]
     assert cmd[0] == "/usr/bin/mitmdump"
-    assert "tracker_db_path=" in " ".join(cmd)
-    assert "tracker_mode=all" in " ".join(cmd)
+    joined = " ".join(cmd)
+    assert "tracker_db_path=" in joined
+    assert "tracker_mode=all" in joined
+    assert "tracker_no_cache=true" in joined
+    assert out["no_cache"] is True
+
+
+def test_keep_cache_disables_no_cache(patched_environment, capsys, tmp_repo: Path) -> None:
+    rc = main(["record", "start", "--keep-cache", "--port", "8123", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == EXIT_OK
+    assert out["no_cache"] is False
+    cmd = patched_environment["captured_cmd"][-1]
+    joined = " ".join(cmd)
+    assert "tracker_no_cache=false" in joined
 
 
 def test_start_idempotent_when_already_running(

@@ -347,6 +347,116 @@ def test_maplocal_hot_reload_drops_disabled_rule(db_path: Path, tmp_path: Path) 
         assert second.response is None  # rule disabled, request passes through
 
 
+def test_no_cache_neutralizes_real_response_headers(db_path: Path) -> None:
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_no_cache=True,
+    )
+    with ctx:
+        flow = tflow.tflow(resp=True)
+        flow.response.headers["Cache-Control"] = "max-age=3600, public"
+        flow.response.headers["Etag"] = "W/\"abc\""
+        flow.response.headers["Last-Modified"] = "Tue, 28 Apr 2026 14:00:00 GMT"
+        flow.response.headers["Age"] = "120"
+
+        addon.request(flow)
+        addon.response(flow)
+
+    assert "no-store" in flow.response.headers["Cache-Control"]
+    assert flow.response.headers["Pragma"] == "no-cache"
+    assert flow.response.headers["Expires"] == "0"
+    assert "Etag" not in flow.response.headers
+    assert "Last-Modified" not in flow.response.headers
+    assert "Age" not in flow.response.headers
+
+
+def test_no_cache_strips_conditional_request_headers(db_path: Path) -> None:
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_no_cache=True,
+    )
+    with ctx:
+        flow = tflow.tflow(resp=False)
+        flow.request.headers["If-None-Match"] = "W/\"abc\""
+        flow.request.headers["If-Modified-Since"] = "Tue, 28 Apr 2026 14:00:00 GMT"
+        addon.request(flow)
+
+    assert "If-None-Match" not in flow.request.headers
+    assert "If-Modified-Since" not in flow.request.headers
+
+
+def test_keep_cache_preserves_original_headers(db_path: Path) -> None:
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_no_cache=False,
+    )
+    with ctx:
+        flow = tflow.tflow(resp=True)
+        flow.response.headers["Cache-Control"] = "max-age=3600, public"
+        flow.response.headers["Etag"] = "W/\"abc\""
+
+        addon.request(flow)
+        addon.response(flow)
+
+    assert flow.response.headers["Cache-Control"] == "max-age=3600, public"
+    assert flow.response.headers["Etag"] == "W/\"abc\""
+
+
+def test_maplocal_strips_length_dependent_headers(db_path: Path, tmp_path: Path) -> None:
+    from mitm_tracker.maplocal import MapLocalStore
+
+    profile_dir = tmp_path / "profile"
+    store = MapLocalStore(profile_dir=profile_dir)
+    store.add(
+        url_pattern="http://address:22/path",
+        status=200,
+        headers=[
+            ("Content-Type", "application/json"),
+            ("Content-Length", "999999"),  # stale
+            ("Etag", "W/\"old\""),
+            ("Last-Modified", "Mon, 27 Apr 2026 00:00:00 GMT"),
+            ("Transfer-Encoding", "chunked"),
+            ("Content-Encoding", "gzip"),
+        ],
+        body=b'{"new":true}',
+    )
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_maplocal_dir=str(profile_dir),
+        tracker_no_cache=False,  # focus on length-only sanitization
+    )
+    with ctx:
+        flow = tflow.tflow(resp=False)
+        addon.request(flow)
+
+    assert flow.response is not None
+    assert flow.response.content == b'{"new":true}'
+    # Length recomputed by mitmproxy
+    assert int(flow.response.headers["Content-Length"]) == len(b'{"new":true}')
+    assert "Etag" not in flow.response.headers
+    assert "Last-Modified" not in flow.response.headers
+    assert "Transfer-Encoding" not in flow.response.headers
+    assert "Content-Encoding" not in flow.response.headers
+    assert flow.response.headers["Content-Type"] == "application/json"
+
+
 def test_maplocal_no_match_passes_request_through(db_path: Path, tmp_path: Path) -> None:
     from mitm_tracker.maplocal import MapLocalStore
 

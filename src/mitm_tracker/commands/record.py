@@ -52,6 +52,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Skip configuring the macOS system proxy.",
     )
+    start_p.add_argument(
+        "--keep-cache",
+        action="store_true",
+        help="Preserve original Cache-Control headers (default: force no-cache like Charles).",
+    )
     start_p.add_argument("--json", action="store_true", dest="json_mode")
     start_p.set_defaults(func=cmd_start)
 
@@ -125,6 +130,8 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
 
     maplocal_dir = workspace.profile_dir(profile)
 
+    no_cache = not args.keep_cache
+
     cmd = _build_mitmdump_command(
         mitmdump_bin=mitmdump_bin,
         listen_host=args.listen_host,
@@ -133,6 +140,7 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
         mode=args.mode,
         allow_regex=allow_regex,
         maplocal_dir=maplocal_dir,
+        no_cache=no_cache,
     )
     log_handle = workspace.log_path.open("ab", buffering=0)
     log_handle.write(
@@ -177,6 +185,7 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
         "session_db": state["session_db"],
         "ssl_decryption_active": allow_regex is not None,
         "proxy_service": proxy_service,
+        "no_cache": no_cache,
     }
     if args.json_mode:
         emit_json(payload)
@@ -345,6 +354,7 @@ def _build_mitmdump_command(
     mode: str,
     allow_regex: str | None,
     maplocal_dir: Path | None = None,
+    no_cache: bool = True,
 ) -> list[str]:
     addon_path = _addon_module_path()
     cmd = [
@@ -359,6 +369,8 @@ def _build_mitmdump_command(
         f"tracker_db_path={db_path}",
         "--set",
         f"tracker_mode={mode}",
+        "--set",
+        f"tracker_no_cache={'true' if no_cache else 'false'}",
     ]
     if maplocal_dir is not None:
         cmd.extend(["--set", f"tracker_maplocal_dir={maplocal_dir}"])

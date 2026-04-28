@@ -23,6 +23,29 @@ log = logging.getLogger("mitm_tracker.addon")
 
 DEFAULT_BODY_LIMIT_BYTES = 5 * 1024 * 1024
 
+_LENGTH_DEPENDENT_HEADERS = {
+    "content-length",
+    "etag",
+    "last-modified",
+    "transfer-encoding",
+    "content-encoding",
+}
+
+_CACHE_HEADERS_TO_DROP = {
+    "age",
+    "etag",
+    "last-modified",
+    "expires",
+    "x-cache",
+    "x-cache-hits",
+}
+
+_NO_CACHE_OVERRIDES = (
+    ("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"),
+    ("Pragma", "no-cache"),
+    ("Expires", "0"),
+)
+
 
 class TrackerAddon:
     def __init__(self) -> None:
@@ -37,6 +60,7 @@ class TrackerAddon:
         self._maplocal_dir: Path | None = None
         self._maplocal_signature: tuple = ()
         self._maplocal_reload_lock = threading.Lock()
+        self._no_cache: bool = False
 
     def load(self, loader) -> None:
         loader.add_option(
@@ -63,6 +87,12 @@ class TrackerAddon:
             default="",
             help="Path to the active profile directory holding maplocal.json.",
         )
+        loader.add_option(
+            name="tracker_no_cache",
+            typespec=bool,
+            default=True,
+            help="Force-disable HTTP caching by rewriting Cache-Control headers on every response.",
+        )
 
     def configure(self, updates) -> None:
         if "tracker_db_path" in updates and ctx.options.tracker_db_path:
@@ -78,6 +108,8 @@ class TrackerAddon:
             self._mode = ctx.options.tracker_mode
         if "tracker_body_limit" in updates:
             self._body_limit = int(ctx.options.tracker_body_limit)
+        if "tracker_no_cache" in updates:
+            self._no_cache = bool(ctx.options.tracker_no_cache)
         if "tracker_maplocal_dir" in updates:
             value = ctx.options.tracker_maplocal_dir
             if value:
@@ -146,6 +178,9 @@ class TrackerAddon:
             log.warning("TrackerAddon has no store configured; dropping request")
             return
 
+        if self._no_cache:
+            _strip_conditional_request_headers(flow.request)
+
         self._refresh_maplocal_rules()
         mock = self._find_mock(flow)
 
@@ -185,8 +220,13 @@ class TrackerAddon:
         body: bytes,
         headers: list[tuple[str, str]],
     ) -> None:
+        sanitized = [
+            (k, v)
+            for k, v in headers
+            if k.lower() not in _LENGTH_DEPENDENT_HEADERS
+        ]
         header_tuples = tuple(
-            (k.encode("utf-8"), v.encode("utf-8")) for k, v in headers
+            (k.encode("utf-8"), v.encode("utf-8")) for k, v in sanitized
         )
         response = mitm_http.Response.make(
             status_code=int(rule.status),
@@ -196,6 +236,8 @@ class TrackerAddon:
         flow.response = response
 
     def response(self, flow: HTTPFlow) -> None:
+        if self._no_cache and flow.response is not None:
+            _neutralize_cache_response_headers(flow.response)
         if flow.id not in self._tracked:
             return
         if self._store is None:
@@ -468,6 +510,27 @@ def _alpn(value) -> str | None:
         except UnicodeDecodeError:
             return value.hex()
     return str(value)
+
+
+def _strip_conditional_request_headers(request) -> None:
+    """Remove headers that ask the server to skip the body (304 Not Modified)."""
+    for name in ("if-none-match", "if-modified-since"):
+        try:
+            del request.headers[name]
+        except KeyError:
+            pass
+
+
+def _neutralize_cache_response_headers(response) -> None:
+    """Rewrite cache-control on responses so clients always re-request."""
+    headers = response.headers
+    for name in _CACHE_HEADERS_TO_DROP:
+        try:
+            del headers[name]
+        except KeyError:
+            pass
+    for name, value in _NO_CACHE_OVERRIDES:
+        headers[name] = value
 
 
 def _proxy_mode_str(value) -> str | None:
