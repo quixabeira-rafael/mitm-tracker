@@ -375,7 +375,25 @@ def _cookies_to_json(cookies) -> str | None:
 
 def _serialize_cookie_value(value) -> Any:
     if isinstance(value, tuple):
-        return [_to_text(part) if isinstance(part, (bytes, str)) else part for part in value]
+        return [_serialize_cookie_value(part) for part in value]
+    if isinstance(value, (bytes, str)):
+        return _to_text(value)
+    if isinstance(value, (bool, int, float)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {_to_text(k): _serialize_cookie_value(v) for k, v in value.items()}
+    try:
+        items = value.items(multi=True)
+    except Exception:
+        try:
+            items = value.items()
+        except Exception:
+            items = None
+    if items is not None:
+        try:
+            return [[_to_text(k), _serialize_cookie_value(v)] for k, v in items]
+        except Exception:
+            pass
     return _to_text(value)
 
 
