@@ -34,6 +34,9 @@ class TrackerAddon:
         self._tracked: set[str] = set()
         self._maplocal_store: MapLocalStore | None = None
         self._maplocal_compiled: list[tuple[MapLocalRule, CompiledPattern, bytes, list[tuple[str, str]]]] = []
+        self._maplocal_dir: Path | None = None
+        self._maplocal_signature: tuple = ()
+        self._maplocal_reload_lock = threading.Lock()
 
     def load(self, loader) -> None:
         loader.add_option(
@@ -78,34 +81,50 @@ class TrackerAddon:
         if "tracker_maplocal_dir" in updates:
             value = ctx.options.tracker_maplocal_dir
             if value:
-                self._load_maplocal_rules(Path(value))
+                self._maplocal_dir = Path(value)
+                self._refresh_maplocal_rules(force=True)
             else:
+                self._maplocal_dir = None
                 self._maplocal_store = None
                 self._maplocal_compiled = []
+                self._maplocal_signature = ()
 
-    def _load_maplocal_rules(self, profile_dir: Path) -> None:
-        store = MapLocalStore(profile_dir=profile_dir)
-        compiled: list[tuple[MapLocalRule, CompiledPattern, bytes, list[tuple[str, str]]]] = []
-        try:
-            for rule in store.load():
-                if not rule.enabled:
-                    continue
-                try:
-                    pattern = compile_pattern(rule.url_pattern, rule.query_mode)
-                except UrlMatcherError as exc:
-                    log.warning(
-                        "Skipping invalid map local rule %s: %s", rule.id, exc
-                    )
-                    continue
-                body = store.read_body(rule.id)
-                headers = store.read_headers(rule.id)
-                compiled.append((rule, pattern, body, headers))
-        except Exception:
-            log.exception("Failed to load map local rules from %s", profile_dir)
+    def _refresh_maplocal_rules(self, *, force: bool = False) -> None:
+        if self._maplocal_dir is None:
             return
-        self._maplocal_store = store
-        self._maplocal_compiled = compiled
-        log.info("Loaded %d enabled map local rules", len(compiled))
+        with self._maplocal_reload_lock:
+            current = _maplocal_signature(self._maplocal_dir)
+            if not force and current == self._maplocal_signature:
+                return
+            store = MapLocalStore(profile_dir=self._maplocal_dir)
+            compiled: list[tuple[MapLocalRule, CompiledPattern, bytes, list[tuple[str, str]]]] = []
+            try:
+                for rule in store.load():
+                    if not rule.enabled:
+                        continue
+                    try:
+                        pattern = compile_pattern(rule.url_pattern, rule.query_mode)
+                    except UrlMatcherError as exc:
+                        log.warning(
+                            "Skipping invalid map local rule %s: %s", rule.id, exc
+                        )
+                        continue
+                    body = store.read_body(rule.id)
+                    headers = store.read_headers(rule.id)
+                    compiled.append((rule, pattern, body, headers))
+            except Exception:
+                log.exception(
+                    "Failed to load map local rules from %s", self._maplocal_dir
+                )
+                return
+            self._maplocal_store = store
+            self._maplocal_compiled = compiled
+            self._maplocal_signature = current
+            log.info(
+                "Loaded %d enabled map local rules%s",
+                len(compiled),
+                " (hot-reload)" if not force else "",
+            )
 
     @staticmethod
     def _open_or_init_store(db_path: Path, mode: str) -> FlowStore:
@@ -127,6 +146,7 @@ class TrackerAddon:
             log.warning("TrackerAddon has no store configured; dropping request")
             return
 
+        self._refresh_maplocal_rules()
         mock = self._find_mock(flow)
 
         with self._lock:
@@ -454,6 +474,34 @@ def _proxy_mode_str(value) -> str | None:
     if value is None:
         return None
     return getattr(value, "type_name", None) or str(value)
+
+
+def _maplocal_signature(profile_dir: Path) -> tuple:
+    """Cheap fingerprint to detect changes in map local files.
+
+    Captures mtime+size of maplocal.json and every file under maplocal-bodies/.
+    Two runs return the same tuple iff nothing changed on disk.
+    """
+    parts: list[tuple[str, float, int]] = []
+    json_path = profile_dir / "maplocal.json"
+    if json_path.exists():
+        try:
+            stat = json_path.stat()
+            parts.append((str(json_path), stat.st_mtime, stat.st_size))
+        except OSError:
+            pass
+    bodies_dir = profile_dir / "maplocal-bodies"
+    if bodies_dir.exists():
+        try:
+            for entry in sorted(bodies_dir.iterdir()):
+                try:
+                    stat = entry.stat()
+                except OSError:
+                    continue
+                parts.append((str(entry), stat.st_mtime, stat.st_size))
+        except OSError:
+            pass
+    return tuple(parts)
 
 
 addons = [TrackerAddon()]

@@ -246,6 +246,107 @@ def test_maplocal_disabled_rule_does_not_match(db_path: Path, tmp_path: Path) ->
     reader.close()
 
 
+def test_maplocal_hot_reload_picks_up_new_rule(db_path: Path, tmp_path: Path) -> None:
+    from mitm_tracker.maplocal import MapLocalStore
+
+    profile_dir = tmp_path / "profile"
+    store = MapLocalStore(profile_dir=profile_dir)
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_maplocal_dir=str(profile_dir),
+    )
+    with ctx:
+        first = tflow.tflow(resp=False)
+        addon.request(first)
+        assert first.response is None  # no rule yet, request not mocked
+
+        store.add(
+            url_pattern="http://address:22/path",
+            status=418,
+            headers=[("Content-Type", "text/plain")],
+            body=b"hot-reloaded",
+        )
+
+        second = tflow.tflow(resp=False)
+        addon.request(second)
+        assert second.response is not None
+        assert second.response.status_code == 418
+        assert second.response.content == b"hot-reloaded"
+
+
+def test_maplocal_hot_reload_picks_up_body_change(db_path: Path, tmp_path: Path) -> None:
+    import time as _time
+    from mitm_tracker.maplocal import MapLocalStore
+
+    profile_dir = tmp_path / "profile"
+    store = MapLocalStore(profile_dir=profile_dir)
+    rule = store.add(
+        url_pattern="http://address:22/path",
+        status=200,
+        headers=[("Content-Type", "text/plain")],
+        body=b"original",
+    )
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_maplocal_dir=str(profile_dir),
+    )
+    with ctx:
+        first = tflow.tflow(resp=False)
+        addon.request(first)
+        assert first.response.content == b"original"
+
+        # Force mtime increment so signature changes
+        _time.sleep(1.1)
+        store.write_body(rule.id, b"updated")
+
+        second = tflow.tflow(resp=False)
+        addon.request(second)
+        assert second.response.content == b"updated"
+
+
+def test_maplocal_hot_reload_drops_disabled_rule(db_path: Path, tmp_path: Path) -> None:
+    import time as _time
+    from mitm_tracker.maplocal import MapLocalStore
+
+    profile_dir = tmp_path / "profile"
+    store = MapLocalStore(profile_dir=profile_dir)
+    rule = store.add(
+        url_pattern="http://address:22/path",
+        status=200,
+        body=b"mocked",
+    )
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_maplocal_dir=str(profile_dir),
+    )
+    with ctx:
+        first = tflow.tflow(resp=False)
+        addon.request(first)
+        assert first.response is not None  # initially mocked
+
+        _time.sleep(1.1)
+        store.set_enabled(rule.id, False)
+
+        second = tflow.tflow(resp=False)
+        addon.request(second)
+        assert second.response is None  # rule disabled, request passes through
+
+
 def test_maplocal_no_match_passes_request_through(db_path: Path, tmp_path: Path) -> None:
     from mitm_tracker.maplocal import MapLocalStore
 
