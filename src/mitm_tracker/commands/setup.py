@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mitm_tracker import auth_setup, tray_launch_agent
+from mitm_tracker import auth_setup, claude_skill, tray_launch_agent
 from mitm_tracker.config import workspace_for
 from mitm_tracker.output import (
     EXIT_INVALID_STATE,
@@ -132,6 +132,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     install_p.add_argument("--skip-touch-id", action="store_true")
     install_p.add_argument("--skip-sudo-cache", action="store_true")
     install_p.add_argument("--skip-tray", action="store_true")
+    install_p.add_argument(
+        "--skip-skill",
+        action="store_true",
+        help="Don't prompt to install the Claude Code skill at user level.",
+    )
+    install_p.add_argument(
+        "--with-skill",
+        action="store_true",
+        help="Install the Claude Code skill without prompting (non-interactive).",
+    )
     install_p.add_argument("--json", action="store_true", dest="json_mode")
     install_p.set_defaults(func=cmd_install)
 
@@ -151,7 +161,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def cmd_install(args: argparse.Namespace) -> int:
-    if args.skip_touch_id and args.skip_sudo_cache and args.skip_tray:
+    if (
+        args.skip_touch_id
+        and args.skip_sudo_cache
+        and args.skip_tray
+        and (args.skip_skill or not _should_offer_skill(args))
+    ):
         return emit_error(
             "nothing_to_do",
             "all components were skipped via --skip-* flags",
@@ -159,7 +174,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             exit_code=EXIT_INVALID_STATE,
         )
 
-    payload: dict = {"tray": None, "auth_setup": None}
+    payload: dict = {"tray": None, "auth_setup": None, "skill": None}
 
     if not args.skip_tray:
         workspace_path = (
@@ -202,6 +217,10 @@ def cmd_install(args: argparse.Namespace) -> int:
             )
         payload["auth_setup"] = auth_result.to_dict()
 
+    if _resolve_skill_choice(args):
+        skill_result = claude_skill.install()
+        payload["skill"] = skill_result.to_dict()
+
     if args.json_mode:
         emit_json(payload)
     else:
@@ -209,11 +228,45 @@ def cmd_install(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _should_offer_skill(args: argparse.Namespace) -> bool:
+    if args.skip_skill:
+        return False
+    if not claude_skill.claude_code_present():
+        return False
+    return True
+
+
+def _resolve_skill_choice(args: argparse.Namespace) -> bool:
+    if args.skip_skill:
+        return False
+    if not claude_skill.claude_code_present():
+        return False
+    if args.with_skill:
+        return True
+    if args.json_mode:
+        return False
+    if not sys.stdin.isatty():
+        return False
+    sys.stderr.write(
+        "\nClaude Code detected. Install the mitm-tracker skill at user level "
+        "(~/.claude/skills/mitm-tracker)? [Y/n] "
+    )
+    sys.stderr.flush()
+    try:
+        response = input().strip().lower()
+    except EOFError:
+        return False
+    return response in ("", "y", "yes")
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
-    payload: dict = {"tray": None, "auth_setup": None, "cleanup": None}
+    payload: dict = {"tray": None, "auth_setup": None, "skill": None, "cleanup": None}
 
     tray_result = tray_launch_agent.uninstall()
     payload["tray"] = tray_result.to_dict()
+
+    skill_result = claude_skill.uninstall()
+    payload["skill"] = skill_result.to_dict()
 
     try:
         auth_result = auth_setup.uninstall(
@@ -241,9 +294,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     auth_status = auth_setup.status()
     tray_status = tray_launch_agent.status()
+    skill_status = claude_skill.status()
     payload = {
         "auth_setup": auth_status.to_dict(),
         "tray": tray_status.to_dict(),
+        "skill": skill_status.to_dict(),
     }
     if args.json_mode:
         emit_json(payload)
@@ -254,7 +309,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"tray installed:  {tray_status.installed}\n"
             f"tray loaded:     {tray_status.loaded}\n"
             f"tray pid:        {tray_status.pid if tray_status.pid is not None else '-'}\n"
-            f"tray workspace:  {tray_status.workspace if tray_status.workspace else '-'}"
+            f"tray workspace:  {tray_status.workspace if tray_status.workspace else '-'}\n"
+            f"skill installed: {skill_status.is_managed_symlink}\n"
+            f"skill points to: {skill_status.points_to if skill_status.points_to else '-'}"
         )
     return EXIT_OK
 
@@ -262,6 +319,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def _render_install_text(payload: dict) -> None:
     tray = payload.get("tray")
     auth = payload.get("auth_setup")
+    skill = payload.get("skill")
     lines: list[str] = []
     if tray is not None:
         verb = "replaced" if tray["replaced_existing"] else "installed"
@@ -279,6 +337,12 @@ def _render_install_text(payload: dict) -> None:
             )
         else:
             lines.append("touch_id + sudo_cache: already configured (no changes)")
+    if skill is not None:
+        if skill.get("installed"):
+            verb = "replaced" if skill["replaced_existing"] else "installed"
+            lines.append(f"skill:      {verb} ({skill['skill_file']} -> {skill['source_file']})")
+        else:
+            lines.append(f"skill:      skipped ({skill.get('skipped_reason') or 'unknown'})")
     emit_text("\n".join(lines))
 
 

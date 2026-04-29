@@ -18,6 +18,8 @@ def _install_args(
     skip_touch_id: bool = False,
     skip_sudo_cache: bool = False,
     skip_tray: bool = False,
+    skip_skill: bool = True,  # default in tests: don't try to install the Claude skill
+    with_skill: bool = False,
     json_mode: bool = True,
 ) -> argparse.Namespace:
     return argparse.Namespace(
@@ -25,6 +27,8 @@ def _install_args(
         skip_touch_id=skip_touch_id,
         skip_sudo_cache=skip_sudo_cache,
         skip_tray=skip_tray,
+        skip_skill=skip_skill,
+        with_skill=with_skill,
         json_mode=json_mode,
     )
 

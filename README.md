@@ -118,21 +118,44 @@ simulators). Exit code: `0` all green, `2` warnings only, `3` errors.
 Each check that's not OK prints a `fix:` hint with the exact command to
 resolve it.
 
-### Claude Code skill (auto-discovered)
+### Claude Code skill (optional, available across all projects)
 
 The repository ships a [Claude Code](https://docs.claude.com/en/docs/claude-code)
 skill at [`.claude/skills/mitm-tracker/SKILL.md`](.claude/skills/mitm-tracker/SKILL.md).
-Cloning the repo and running Claude Code from within it makes the skill
-discoverable automatically — no copying or installation step needed.
 The skill teaches Claude how to use `mitm-tracker` end-to-end: capture
 APIs, mock responses, reproduce as curl, run `doctor`, manage the tray,
 plus all the gotchas accumulated from real use (CA-regen trap, zombie
 proxy detection, pre-Sonoma Touch ID limits, etc.).
 
-Precedence per Claude Code's
-[skill discovery](https://code.claude.com/docs/en/skills): enterprise >
-personal (`~/.claude/skills/`) > project (`.claude/skills/`). If you
-maintain a personal copy, it wins; otherwise the repo's copy is used.
+To make the skill available to Claude Code in **any** repo (not just
+this one), install it at user level — `mitm-tracker` will symlink it
+into `~/.claude/skills/mitm-tracker/`:
+
+```bash
+mitm-tracker skill install        # symlink ~/.claude/skills/mitm-tracker -> repo
+mitm-tracker skill status         # confirm symlink is managed
+mitm-tracker skill uninstall      # remove the symlink (only if we own it)
+```
+
+`mitm-tracker setup install` also offers to do this for you — when it
+detects `~/.claude` and an interactive terminal, it prompts:
+
+```
+Claude Code detected. Install the mitm-tracker skill at user level
+(~/.claude/skills/mitm-tracker)? [Y/n]
+```
+
+Because the user-level copy is a **symlink** to the repo, `git pull`
+keeps your installed skill up-to-date automatically. Use
+`--skip-skill` (no prompt, don't install) or `--with-skill` (no prompt,
+do install) for non-interactive flows.
+
+If you maintain your own personal copy at `~/.claude/skills/mitm-tracker/`
+that **isn't** the symlink we manage, `skill uninstall` leaves it
+untouched. Per Claude Code's
+[skill discovery](https://code.claude.com/docs/en/skills) precedence
+(enterprise > personal > project), running Claude Code inside this repo
+also finds the project-level skill at `.claude/skills/`.
 
 ---
 
@@ -324,7 +347,8 @@ mitm-tracker record  {start,stop,status,logs}
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
 mitm-tracker tray    {run,install,uninstall,status}  # macOS menu bar indicator (extra: [tray])
-mitm-tracker setup   {install,uninstall,status}      # Touch ID + sudo cache + tray, one auth
+mitm-tracker setup   {install,uninstall,status}      # Touch ID + sudo cache + tray + (optional) Claude skill
+mitm-tracker skill   {install,uninstall,status}      # Symlink Claude Code skill into ~/.claude/skills/
 mitm-tracker doctor                                  # diagnose environment / report fixable issues
 ```
 

@@ -13,6 +13,7 @@ from mitm_tracker.commands import query as query_commands
 from mitm_tracker.commands import record as record_commands
 from mitm_tracker.commands import release as release_commands
 from mitm_tracker.commands import setup as setup_commands
+from mitm_tracker.commands import skill as skill_commands
 from mitm_tracker.commands import ssl as ssl_commands
 from mitm_tracker.commands import tray as tray_commands
 from mitm_tracker.output import EXIT_SYSTEM, EXIT_USAGE, emit_error
@@ -35,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     release_commands.register(subparsers)
     tray_commands.register(subparsers)
     setup_commands.register(subparsers)
+    skill_commands.register(subparsers)
     doctor_commands.register(subparsers)
 
     return parser

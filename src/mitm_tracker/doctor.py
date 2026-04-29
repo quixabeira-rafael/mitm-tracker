@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mitm_tracker import auth_setup, tray_launch_agent
+from mitm_tracker import auth_setup, claude_skill, tray_launch_agent
 from mitm_tracker.config import workspace_for
 from mitm_tracker.session_manager import SessionManager
 
@@ -242,6 +242,39 @@ def check_sudo_cache_setup() -> CheckResult:
     )
 
 
+def check_claude_skill() -> CheckResult:
+    if not claude_skill.claude_code_present():
+        return CheckResult(
+            name="Claude Code skill",
+            status=STATUS_INFO,
+            detail="Claude Code not detected (~/.claude missing); skill install is optional",
+            group="optional",
+        )
+    sk = claude_skill.status()
+    if sk.is_managed_symlink:
+        return CheckResult(
+            name="Claude Code skill",
+            status=STATUS_OK,
+            detail=f"installed (symlink -> {sk.points_to})",
+            group="optional",
+        )
+    if sk.installed:
+        return CheckResult(
+            name="Claude Code skill",
+            status=STATUS_WARN,
+            detail=f"a SKILL.md exists at {sk.skill_file} but it is not the managed symlink",
+            fix="mitm-tracker skill install --json   (will replace it with our symlink)",
+            group="optional",
+        )
+    return CheckResult(
+        name="Claude Code skill",
+        status=STATUS_WARN,
+        detail="not installed; mitm-tracker skill is unavailable to Claude Code outside this repo",
+        fix="mitm-tracker skill install",
+        group="optional",
+    )
+
+
 def check_tray_launch_agent() -> CheckResult:
     status = tray_launch_agent.status()
     if status.installed and status.loaded:
@@ -391,6 +424,7 @@ def run_all_checks() -> list[CheckResult]:
         check_touch_id_setup(),
         check_sudo_cache_setup(),
         check_tray_launch_agent(),
+        check_claude_skill(),
         check_workspace(),
         check_record_session(),
         check_mitmproxy_ca(),
