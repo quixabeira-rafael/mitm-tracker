@@ -120,6 +120,77 @@ def test_invoke_cli_alerts_when_binary_missing(tmp_path: Path, fake_rumps, monke
     assert "binary not found" in args[1]
 
 
+def test_on_quit_stops_record_when_running(tmp_path: Path, fake_rumps, monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/mitm-tracker")
+    runner = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""))
+
+    ws = Workspace(root=tmp_path)
+    ws.ensure()
+
+    from mitm_tracker.tray_app import TrayApp
+
+    sm = _make_manager(tmp_path, pid_alive=lambda _: True)
+    sm.start(pid=1234, mode="all", port=8080, session_db=Path("x.db"), proxy_service=None)
+
+    app = TrayApp.__new__(TrayApp)
+    app._workspace = ws
+    app._runner = runner
+    app._sessions = sm
+
+    app._on_quit(None)
+
+    runner.assert_called_once()
+    args, _ = runner.call_args
+    cmd, _cwd = args
+    assert cmd[1:] == ["record", "stop", "--json"]
+    fake_rumps.quit_application.assert_called_once()
+
+
+def test_on_quit_stops_record_when_crashed(tmp_path: Path, fake_rumps, monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/mitm-tracker")
+    runner = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""))
+
+    ws = Workspace(root=tmp_path)
+    ws.ensure()
+
+    from mitm_tracker.tray_app import TrayApp
+
+    sm = _make_manager(tmp_path, pid_alive=lambda _: False)
+    sm.start(pid=1234, mode="all", port=8080, session_db=Path("x.db"), proxy_service=None)
+
+    app = TrayApp.__new__(TrayApp)
+    app._workspace = ws
+    app._runner = runner
+    app._sessions = sm
+
+    app._on_quit(None)
+
+    runner.assert_called_once()
+    fake_rumps.quit_application.assert_called_once()
+
+
+def test_on_quit_skips_stop_when_already_stopped(tmp_path: Path, fake_rumps, monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/mitm-tracker")
+    runner = MagicMock()
+
+    ws = Workspace(root=tmp_path)
+    ws.ensure()
+
+    from mitm_tracker.tray_app import TrayApp
+
+    sm = _make_manager(tmp_path)
+
+    app = TrayApp.__new__(TrayApp)
+    app._workspace = ws
+    app._runner = runner
+    app._sessions = sm
+
+    app._on_quit(None)
+
+    runner.assert_not_called()
+    fake_rumps.quit_application.assert_called_once()
+
+
 def test_format_status_line_includes_pid_and_port(tmp_path: Path, fake_rumps) -> None:
     from mitm_tracker.tray_app import Status, _format_status_line
 

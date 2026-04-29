@@ -59,7 +59,7 @@ class TrayApp(rumps.App):
         self._reveal_state_item = rumps.MenuItem(
             "Reveal state.json in Finder", callback=self._on_reveal_state
         )
-        self._quit_item = rumps.MenuItem("Quit tray", callback=rumps.quit_application)
+        self._quit_item = rumps.MenuItem("Quit tray", callback=self._on_quit)
 
         self.menu = [
             self._status_item,
@@ -101,6 +101,12 @@ class TrayApp(rumps.App):
     def _on_stop(self, _sender) -> None:
         self._invoke_cli(["record", "stop", "--json"])
         self._refresh(None)
+
+    def _on_quit(self, _sender) -> None:
+        status = compute_status(self._sessions)
+        if status in (Status.RUNNING, Status.CRASHED):
+            self._invoke_cli(["record", "stop", "--json"])
+        rumps.quit_application()
 
     def _on_open_captures(self, _sender) -> None:
         path = self._workspace.captures_dir
