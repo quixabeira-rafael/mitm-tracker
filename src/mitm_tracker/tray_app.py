@@ -79,6 +79,10 @@ class TrayApp(rumps.App):
         self._refresh(None)
         self._timer.start()
 
+    def run(self, **options) -> None:
+        _set_accessory_activation_policy()
+        super().run(**options)
+
     def _refresh(self, _sender) -> None:
         status = compute_status(self._sessions)
         self.title = _TITLE_BY_STATUS[status]
@@ -132,6 +136,16 @@ class TrayApp(rumps.App):
             return
         if result.returncode != 0:
             rumps.alert("mitm-tracker", _extract_error(result))
+
+
+def _set_accessory_activation_policy() -> None:
+    try:
+        import AppKit
+    except ImportError:
+        return
+    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+        AppKit.NSApplicationActivationPolicyAccessory
+    )
 
 
 def _default_runner(cmd: list[str], cwd: str) -> subprocess.CompletedProcess:

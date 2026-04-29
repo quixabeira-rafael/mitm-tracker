@@ -201,6 +201,30 @@ def test_format_status_line_includes_pid_and_port(tmp_path: Path, fake_rumps) ->
     assert "Running" in line
 
 
+def test_set_accessory_activation_policy_calls_appkit(monkeypatch, fake_rumps) -> None:
+    fake_appkit = MagicMock()
+    fake_appkit.NSApplicationActivationPolicyAccessory = 1
+    monkeypatch.setitem(sys.modules, "AppKit", fake_appkit)
+
+    monkeypatch.delitem(sys.modules, "mitm_tracker.tray_app", raising=False)
+    from mitm_tracker.tray_app import _set_accessory_activation_policy
+
+    _set_accessory_activation_policy()
+
+    fake_appkit.NSApplication.sharedApplication.return_value.setActivationPolicy_.assert_called_once_with(
+        1
+    )
+
+
+def test_set_accessory_activation_policy_silent_when_appkit_missing(monkeypatch, fake_rumps) -> None:
+    monkeypatch.setitem(sys.modules, "AppKit", None)
+
+    monkeypatch.delitem(sys.modules, "mitm_tracker.tray_app", raising=False)
+    from mitm_tracker.tray_app import _set_accessory_activation_policy
+
+    _set_accessory_activation_policy()  # should not raise
+
+
 def test_format_status_line_crashed_mentions_pid(tmp_path: Path, fake_rumps) -> None:
     from mitm_tracker.tray_app import Status, _format_status_line
 
