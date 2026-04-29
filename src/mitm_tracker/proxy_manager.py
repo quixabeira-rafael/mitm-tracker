@@ -197,6 +197,17 @@ def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess:
 def _default_privileged_runner(
     commands: list[list[str]], prompt: str
 ) -> subprocess.CompletedProcess:
+    if _can_use_sudo_touch_id():
+        try:
+            return _default_sudo_runner(commands, prompt)
+        except FileNotFoundError:
+            pass
+    return _default_osascript_runner(commands, prompt)
+
+
+def _default_osascript_runner(
+    commands: list[list[str]], prompt: str
+) -> subprocess.CompletedProcess:
     shell_script = build_shell_script(commands)
     osascript = build_osascript(shell_script, prompt)
     try:
@@ -212,6 +223,35 @@ def _default_privileged_runner(
     except subprocess.TimeoutExpired as exc:
         raise ProxyManagerError(
             "osascript timed out waiting for the authorization dialog (5 minutes)"
+        ) from exc
+
+
+def _can_use_sudo_touch_id() -> bool:
+    try:
+        from mitm_tracker import auth_setup
+    except ImportError:
+        return False
+    try:
+        return auth_setup.is_touch_id_configured()
+    except Exception:
+        return False
+
+
+def _default_sudo_runner(
+    commands: list[list[str]], prompt: str
+) -> subprocess.CompletedProcess:
+    shell_script = build_shell_script(commands)
+    try:
+        return subprocess.run(
+            ["sudo", "-p", "", "/bin/bash", "-c", shell_script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProxyManagerError(
+            "sudo timed out waiting for authentication (5 minutes)"
         ) from exc
 
 
@@ -240,10 +280,18 @@ def _applescript_string(value: str) -> str:
 def _privilege_error_from(proc: subprocess.CompletedProcess) -> ProxyManagerError:
     stderr = (proc.stderr or "").strip()
     stdout = (proc.stdout or "").strip()
-    message = stderr or stdout or f"osascript failed with exit {proc.returncode}"
+    message = stderr or stdout or f"privileged command failed with exit {proc.returncode}"
     if "User canceled" in message or "(-128)" in message:
         return ProxyAuthorizationError(
             "authorization dialog was cancelled by the user"
+        )
+    if "Touch ID cancelled" in message or "pam_tid: cancelled" in message:
+        return ProxyAuthorizationError(
+            "Touch ID prompt was cancelled by the user"
+        )
+    if "incorrect password attempts" in message or "a password is required" in message:
+        return ProxyAuthorizationError(
+            "sudo authentication failed (wrong password or Touch ID unavailable)"
         )
     return ProxyManagerError(message)
 

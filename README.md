@@ -73,17 +73,34 @@ pipx install -e ".[dev,tray]"          # `tray` enables the menu bar indicator
 `mitm-tracker` command becomes available on your `PATH` and code changes in
 the source tree take effect on the next invocation.
 
-If you want the menu bar icon to launch automatically on every login, run
-the following one-time setup from the repo of the app you intend to debug:
+For the full integrated experience, run the following one-time setup from
+the repo of the app you intend to debug:
 
 ```bash
 cd /path/to/the/app/repo
-mitm-tracker tray install
+mitm-tracker setup install
 ```
 
-That registers a per-user LaunchAgent that re-opens the indicator on every
-login. See [Visual status in the macOS menu bar](#visual-status-in-the-macos-menu-bar)
-for the full lifecycle commands (`status`, `uninstall`, ad-hoc `run`).
+That single command — under one authentication prompt — does three things:
+
+1. Registers a per-user LaunchAgent so the **tray** indicator re-opens on
+   every login (see [Visual status in the macOS menu bar](#visual-status-in-the-macos-menu-bar)).
+2. Configures **Touch ID** as a sudo authentication factor (writes
+   `/etc/pam.d/sudo_local` with `auth sufficient pam_tid.so`). After this,
+   `record start`/`record stop` prompt for your fingerprint instead of your
+   password.
+3. **Extends the sudo cache to 60 minutes for `networksetup` only** (writes
+   `/etc/sudoers.d/mitm-tracker` with `Defaults!/usr/sbin/networksetup
+   timestamp_timeout=60`). A typical debug cycle (start → exercise app →
+   stop) needs only one Touch ID tap. The cache is **not** global — other
+   `sudo` commands keep their default 5-minute timeout.
+
+Skip components with `--skip-touch-id`, `--skip-sudo-cache`, `--skip-tray`.
+Reverse everything with `mitm-tracker setup uninstall`. Inspect with
+`mitm-tracker setup status`.
+
+Requires macOS Sonoma (14.0) or later — older versions don't have
+`/etc/pam.d/sudo_local`.
 
 Verify the install:
 
@@ -282,6 +299,7 @@ mitm-tracker record  {start,stop,status,logs}
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
 mitm-tracker tray    {run,install,uninstall,status}  # macOS menu bar indicator (extra: [tray])
+mitm-tracker setup   {install,uninstall,status}      # Touch ID + sudo cache + tray, one auth
 ```
 
 Every subcommand accepts `--json` and returns a predictable structured

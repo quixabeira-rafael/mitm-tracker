@@ -11,6 +11,8 @@ from mitm_tracker.proxy_manager import (
     ProxyManager,
     ProxyManagerError,
     ProxyState,
+    _default_privileged_runner,
+    _privilege_error_from,
     build_osascript,
     build_shell_script,
 )
@@ -245,3 +247,59 @@ def test_snapshot_combines_web_and_secure() -> None:
     assert snap.service == "Wi-Fi"
     assert snap.web.enabled is True
     assert snap.secure.enabled is True
+
+
+def test_privilege_error_recognizes_osascript_cancel() -> None:
+    err = _privilege_error_from(_completed(stderr="User canceled.", code=1))
+    assert isinstance(err, ProxyAuthorizationError)
+
+
+def test_privilege_error_recognizes_touch_id_cancel() -> None:
+    err = _privilege_error_from(_completed(stderr="pam_tid: cancelled by user", code=1))
+    assert isinstance(err, ProxyAuthorizationError)
+
+
+def test_privilege_error_recognizes_sudo_password_failure() -> None:
+    err = _privilege_error_from(
+        _completed(stderr="sudo: 3 incorrect password attempts", code=1)
+    )
+    assert isinstance(err, ProxyAuthorizationError)
+
+
+def test_privilege_error_recognizes_sudo_password_required() -> None:
+    err = _privilege_error_from(
+        _completed(stderr="sudo: a password is required", code=1)
+    )
+    assert isinstance(err, ProxyAuthorizationError)
+
+
+def test_default_privileged_runner_uses_sudo_when_touch_id_configured(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr("mitm_tracker.proxy_manager._can_use_sudo_touch_id", lambda: True)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    _default_privileged_runner([["networksetup", "-getwebproxy", "Wi-Fi"]], "test")
+
+    assert captured["cmd"][0] == "sudo"
+    assert "/bin/bash" in captured["cmd"]
+    assert "osascript" not in captured["cmd"]
+
+
+def test_default_privileged_runner_falls_back_to_osascript(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr("mitm_tracker.proxy_manager._can_use_sudo_touch_id", lambda: False)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    _default_privileged_runner([["networksetup", "-getwebproxy", "Wi-Fi"]], "test")
+
+    assert captured["cmd"][0] == "osascript"
