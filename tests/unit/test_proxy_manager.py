@@ -64,7 +64,7 @@ def test_proxy_backup_round_trip() -> None:
 def test_list_services_strips_disabled_marker_and_header() -> None:
     runner, _calls = _scripted_runner(
         {
-            ("networksetup", "-listallnetworkservices"): _completed(
+            ("/usr/sbin/networksetup", "-listallnetworkservices"): _completed(
                 stdout=(
                     "An asterisk (*) denotes that a network service is disabled.\n"
                     "Wi-Fi\n"
@@ -81,7 +81,7 @@ def test_list_services_strips_disabled_marker_and_header() -> None:
 def test_get_active_service_prefers_wifi() -> None:
     runner, _ = _scripted_runner(
         {
-            ("networksetup", "-listallnetworkservices"): _completed(
+            ("/usr/sbin/networksetup", "-listallnetworkservices"): _completed(
                 stdout="Header\nEthernet\nWi-Fi\n"
             )
         }
@@ -93,7 +93,7 @@ def test_get_active_service_prefers_wifi() -> None:
 def test_get_active_service_falls_back_to_first() -> None:
     runner, _ = _scripted_runner(
         {
-            ("networksetup", "-listallnetworkservices"): _completed(
+            ("/usr/sbin/networksetup", "-listallnetworkservices"): _completed(
                 stdout="Header\nThunderbolt Bridge\n"
             )
         }
@@ -105,7 +105,7 @@ def test_get_active_service_falls_back_to_first() -> None:
 def test_get_web_proxy_parses_state() -> None:
     runner, _ = _scripted_runner(
         {
-            ("networksetup", "-getwebproxy", "Wi-Fi"): _completed(
+            ("/usr/sbin/networksetup", "-getwebproxy", "Wi-Fi"): _completed(
                 stdout="Enabled: Yes\nServer: 127.0.0.1\nPort: 8080\nAuthenticated Proxy Enabled: 0\n"
             )
         }
@@ -118,7 +118,7 @@ def test_get_web_proxy_parses_state() -> None:
 def test_get_web_proxy_handles_disabled_state() -> None:
     runner, _ = _scripted_runner(
         {
-            ("networksetup", "-getwebproxy", "Wi-Fi"): _completed(
+            ("/usr/sbin/networksetup", "-getwebproxy", "Wi-Fi"): _completed(
                 stdout="Enabled: No\nServer: \nPort: 0\n"
             )
         }
@@ -138,10 +138,10 @@ def test_set_proxy_routes_through_privileged_runner_in_one_call() -> None:
     assert len(invocations) == 1
     commands, prompt = invocations[0]
     assert commands == [
-        ["networksetup", "-setwebproxy", "Wi-Fi", "127.0.0.1", "8080"],
-        ["networksetup", "-setsecurewebproxy", "Wi-Fi", "127.0.0.1", "8080"],
-        ["networksetup", "-setwebproxystate", "Wi-Fi", "on"],
-        ["networksetup", "-setsecurewebproxystate", "Wi-Fi", "on"],
+        ["/usr/sbin/networksetup", "-setwebproxy", "Wi-Fi", "127.0.0.1", "8080"],
+        ["/usr/sbin/networksetup", "-setsecurewebproxy", "Wi-Fi", "127.0.0.1", "8080"],
+        ["/usr/sbin/networksetup", "-setwebproxystate", "Wi-Fi", "on"],
+        ["/usr/sbin/networksetup", "-setsecurewebproxystate", "Wi-Fi", "on"],
     ]
     assert "macOS web proxy" in prompt
 
@@ -159,8 +159,8 @@ def test_restore_disables_when_backup_was_disabled() -> None:
     assert len(invocations) == 1
     commands, _prompt = invocations[0]
     assert commands == [
-        ["networksetup", "-setwebproxystate", "Wi-Fi", "off"],
-        ["networksetup", "-setsecurewebproxystate", "Wi-Fi", "off"],
+        ["/usr/sbin/networksetup", "-setwebproxystate", "Wi-Fi", "off"],
+        ["/usr/sbin/networksetup", "-setsecurewebproxystate", "Wi-Fi", "off"],
     ]
 
 
@@ -177,10 +177,10 @@ def test_restore_re_enables_with_original_values() -> None:
     assert len(invocations) == 1
     commands, _prompt = invocations[0]
     assert commands == [
-        ["networksetup", "-setwebproxy", "Wi-Fi", "proxy.example.com", "3128"],
-        ["networksetup", "-setwebproxystate", "Wi-Fi", "on"],
-        ["networksetup", "-setsecurewebproxy", "Wi-Fi", "proxy.example.com", "3128"],
-        ["networksetup", "-setsecurewebproxystate", "Wi-Fi", "on"],
+        ["/usr/sbin/networksetup", "-setwebproxy", "Wi-Fi", "proxy.example.com", "3128"],
+        ["/usr/sbin/networksetup", "-setwebproxystate", "Wi-Fi", "on"],
+        ["/usr/sbin/networksetup", "-setsecurewebproxy", "Wi-Fi", "proxy.example.com", "3128"],
+        ["/usr/sbin/networksetup", "-setsecurewebproxystate", "Wi-Fi", "on"],
     ]
 
 
@@ -205,8 +205,8 @@ def test_set_proxy_propagates_other_failures() -> None:
 def test_build_shell_script_chains_with_and() -> None:
     script = build_shell_script(
         [
-            ["networksetup", "-setwebproxy", "Wi-Fi", "127.0.0.1", "8080"],
-            ["networksetup", "-setwebproxystate", "Wi-Fi", "on"],
+            ["/usr/sbin/networksetup", "-setwebproxy", "Wi-Fi", "127.0.0.1", "8080"],
+            ["/usr/sbin/networksetup", "-setwebproxystate", "Wi-Fi", "on"],
         ]
     )
     assert " && " in script
@@ -234,10 +234,10 @@ def test_command_failure_raises() -> None:
 def test_snapshot_combines_web_and_secure() -> None:
     runner, _ = _scripted_runner(
         {
-            ("networksetup", "-getwebproxy", "Wi-Fi"): _completed(
+            ("/usr/sbin/networksetup", "-getwebproxy", "Wi-Fi"): _completed(
                 stdout="Enabled: Yes\nServer: 1.1.1.1\nPort: 8080\n"
             ),
-            ("networksetup", "-getsecurewebproxy", "Wi-Fi"): _completed(
+            ("/usr/sbin/networksetup", "-getsecurewebproxy", "Wi-Fi"): _completed(
                 stdout="Enabled: Yes\nServer: 1.1.1.1\nPort: 8080\n"
             ),
         }
@@ -283,7 +283,7 @@ def test_default_privileged_runner_uses_sudo_when_touch_id_configured(monkeypatc
     monkeypatch.setattr("mitm_tracker.proxy_manager._can_use_sudo_touch_id", lambda: True)
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    _default_privileged_runner([["networksetup", "-getwebproxy", "Wi-Fi"]], "test")
+    _default_privileged_runner([["/usr/sbin/networksetup", "-getwebproxy", "Wi-Fi"]], "test")
 
     assert captured["cmd"][0] == "sudo"
     assert "/bin/bash" in captured["cmd"]
@@ -300,6 +300,6 @@ def test_default_privileged_runner_falls_back_to_osascript(monkeypatch) -> None:
     monkeypatch.setattr("mitm_tracker.proxy_manager._can_use_sudo_touch_id", lambda: False)
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    _default_privileged_runner([["networksetup", "-getwebproxy", "Wi-Fi"]], "test")
+    _default_privileged_runner([["/usr/sbin/networksetup", "-getwebproxy", "Wi-Fi"]], "test")
 
     assert captured["cmd"][0] == "osascript"

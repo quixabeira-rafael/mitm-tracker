@@ -42,13 +42,13 @@ def patched_environment(tmp_repo: Path, monkeypatch):
         runner_calls.append(list(args))
         import subprocess
 
-        if args[:2] == ["networksetup", "-listallnetworkservices"]:
+        if args[:2] == ["/usr/sbin/networksetup", "-listallnetworkservices"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="Header\nWi-Fi\n", stderr="")
-        if args[:2] == ["networksetup", "-getwebproxy"]:
+        if args[:2] == ["/usr/sbin/networksetup", "-getwebproxy"]:
             return subprocess.CompletedProcess(
                 args=args, returncode=0, stdout="Enabled: No\nServer: \nPort: 0\n", stderr=""
             )
-        if args[:2] == ["networksetup", "-getsecurewebproxy"]:
+        if args[:2] == ["/usr/sbin/networksetup", "-getsecurewebproxy"]:
             return subprocess.CompletedProcess(
                 args=args, returncode=0, stdout="Enabled: No\nServer: \nPort: 0\n", stderr=""
             )

@@ -7,6 +7,9 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Sequence
 
 
+_NETWORKSETUP = "/usr/sbin/networksetup"
+
+
 class ProxyManagerError(RuntimeError):
     pass
 
@@ -70,7 +73,7 @@ class ProxyManager:
         self._privileged_runner = privileged_runner or _default_privileged_runner
 
     def list_services(self) -> list[str]:
-        proc = self._run(["networksetup", "-listallnetworkservices"])
+        proc = self._run([_NETWORKSETUP, "-listallnetworkservices"])
         services: list[str] = []
         for line in proc.stdout.splitlines()[1:]:
             stripped = line.strip()
@@ -91,11 +94,11 @@ class ProxyManager:
         raise ProxyManagerError("no network services found via networksetup")
 
     def get_web_proxy(self, service: str) -> ProxyState:
-        proc = self._run(["networksetup", "-getwebproxy", service])
+        proc = self._run([_NETWORKSETUP, "-getwebproxy", service])
         return _parse_state(proc.stdout)
 
     def get_secure_proxy(self, service: str) -> ProxyState:
-        proc = self._run(["networksetup", "-getsecurewebproxy", service])
+        proc = self._run([_NETWORKSETUP, "-getsecurewebproxy", service])
         return _parse_state(proc.stdout)
 
     def snapshot(self, service: str) -> ProxyBackup:
@@ -107,10 +110,10 @@ class ProxyManager:
 
     def set_proxy(self, service: str, host: str, port: int) -> None:
         commands = [
-            ["networksetup", "-setwebproxy", service, host, str(port)],
-            ["networksetup", "-setsecurewebproxy", service, host, str(port)],
-            ["networksetup", "-setwebproxystate", service, "on"],
-            ["networksetup", "-setsecurewebproxystate", service, "on"],
+            [_NETWORKSETUP, "-setwebproxy", service, host, str(port)],
+            [_NETWORKSETUP, "-setsecurewebproxy", service, host, str(port)],
+            [_NETWORKSETUP, "-setwebproxystate", service, "on"],
+            [_NETWORKSETUP, "-setsecurewebproxystate", service, "on"],
         ]
         self._run_privileged_batch(
             commands,
@@ -153,10 +156,10 @@ class ProxyManager:
         cmds: list[list[str]] = []
         if state.server and state.port:
             cmds.append(
-                ["networksetup", set_cmd, service, state.server, str(state.port)]
+                [_NETWORKSETUP, set_cmd, service, state.server, str(state.port)]
             )
         cmds.append(
-            ["networksetup", state_cmd, service, "on" if state.enabled else "off"]
+            [_NETWORKSETUP, state_cmd, service, "on" if state.enabled else "off"]
         )
         return cmds
 

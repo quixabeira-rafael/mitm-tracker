@@ -20,6 +20,8 @@ def _default_path_env(home: Path | None = None) -> str:
             "/usr/local/bin",
             "/usr/bin",
             "/bin",
+            "/usr/sbin",
+            "/sbin",
         ]
     )
 
