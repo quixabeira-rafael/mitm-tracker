@@ -139,6 +139,10 @@ def is_sudo_cache_configured(paths: AuthSetupPaths | None = None) -> bool:
         return False
     try:
         text = sudoers_file.read_text(encoding="utf-8")
+    except PermissionError:
+        # File exists but is mode 0440 root:wheel, so non-root cannot read it.
+        # This is exactly how setup install configures it; treat as configured.
+        return True
     except OSError:
         return False
     return SUDOERS_MANAGED_MARKER in text
@@ -363,9 +367,14 @@ def build_uninstall_plan(paths: AuthSetupPaths) -> tuple[list[list[str]], dict]:
     if paths.sudoers_file.exists():
         try:
             text = paths.sudoers_file.read_text(encoding="utf-8")
+            has_marker = SUDOERS_MANAGED_MARKER in text
+        except PermissionError:
+            # File exists but mode 0440 root:wheel — only setup install creates
+            # it that way, so trust ownership and treat as managed.
+            has_marker = True
         except OSError:
-            text = ""
-        if SUDOERS_MANAGED_MARKER in text:
+            has_marker = False
+        if has_marker:
             cmds.append(["rm", "-f", str(paths.sudoers_file)])
             flags["sudoers_removed"] = True
         else:

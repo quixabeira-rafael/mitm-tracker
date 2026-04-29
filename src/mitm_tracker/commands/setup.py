@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 from mitm_tracker import auth_setup, tray_launch_agent
@@ -13,9 +17,59 @@ from mitm_tracker.output import (
     emit_json,
     emit_text,
 )
-from mitm_tracker.proxy_manager import _default_privileged_runner
 
 _TMPDIR = Path.home() / ".mitm-tracker-setup-tmp"
+
+_ASKPASS_SCRIPT = """#!/bin/bash
+osascript <<'APPLESCRIPT'
+tell application "System Events"
+    activate
+    set result_dialog to display dialog "mitm-tracker setup needs your password to configure Touch ID and the scoped sudo cache.\n\nThis is the last password prompt — afterwards, Touch ID handles record start/stop." default answer "" with hidden answer with title "mitm-tracker setup" buttons {"Cancel", "OK"} default button "OK"
+    text returned of result_dialog
+end tell
+APPLESCRIPT
+"""
+
+
+def _ensure_askpass() -> Path:
+    _TMPDIR.mkdir(parents=True, exist_ok=True)
+    script = _TMPDIR / "askpass.sh"
+    script.write_text(_ASKPASS_SCRIPT)
+    script.chmod(0o700)
+    return script
+
+
+def _sudo_privileged_runner(
+    commands: list[list[str]], prompt: str
+) -> subprocess.CompletedProcess:
+    shell_script = " && ".join(shlex.join(cmd) for cmd in commands)
+    sys.stderr.write(f"\n[mitm-tracker setup] {prompt}\n")
+    sys.stderr.flush()
+
+    if sys.stdin.isatty():
+        return subprocess.run(
+            [
+                "sudo",
+                "-p",
+                "[mitm-tracker setup] Password (or Touch ID if configured): ",
+                "/bin/bash",
+                "-c",
+                shell_script,
+            ],
+            check=False,
+            timeout=300,
+        )
+
+    askpass = _ensure_askpass()
+    env = {**os.environ, "SUDO_ASKPASS": str(askpass)}
+    return subprocess.run(
+        ["sudo", "-A", "/bin/bash", "-c", shell_script],
+        check=False,
+        timeout=300,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -93,7 +147,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     if not (args.skip_touch_id and args.skip_sudo_cache):
         try:
             auth_result = auth_setup.install(
-                privileged_runner=_default_privileged_runner,
+                privileged_runner=_sudo_privileged_runner,
                 tmpdir=_TMPDIR,
                 skip_touch_id=args.skip_touch_id,
                 skip_sudo_cache=args.skip_sudo_cache,
@@ -122,7 +176,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
     try:
         auth_result = auth_setup.uninstall(
-            privileged_runner=_default_privileged_runner,
+            privileged_runner=_sudo_privileged_runner,
             tmpdir=_TMPDIR,
         )
     except auth_setup.AuthSetupError as exc:

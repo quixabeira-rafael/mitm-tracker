@@ -71,14 +71,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     workspace = workspace_for()
-    if not workspace.base.exists():
-        return emit_error(
-            "no_workspace",
-            f"no workspace at {workspace.base}; run `mitm-tracker record start` or any "
-            "other command to bootstrap one first",
-            json_mode=args.json_mode,
-            exit_code=EXIT_INVALID_STATE,
-        )
+    workspace.ensure()
 
     try:
         import rumps  # noqa: F401

@@ -26,14 +26,16 @@ def _simple_args(json_mode: bool = True) -> argparse.Namespace:
     return argparse.Namespace(json_mode=json_mode)
 
 
-def test_cmd_run_no_workspace(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_cmd_run_creates_workspace_if_missing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "rumps", None)
 
     rc = tray_commands.cmd_run(_run_args())
 
-    assert rc == EXIT_INVALID_STATE
-    err = capsys.readouterr().err
-    assert "no_workspace" in err
+    # rumps stub forces ImportError before entering rumps loop; we just want
+    # to confirm the workspace check no longer aborts when the dir is missing.
+    assert (tmp_path / ".mitm-tracker").exists()
+    assert rc == EXIT_SYSTEM
 
 
 def test_cmd_run_rumps_missing(tmp_path: Path, monkeypatch, capsys) -> None:
