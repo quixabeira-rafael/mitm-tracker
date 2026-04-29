@@ -107,7 +107,16 @@ Verify the install:
 ```bash
 mitm-tracker --version
 mitm-tracker --help
+mitm-tracker doctor          # checks deps, OS version, hardware, setup state
 ```
+
+`mitm-tracker doctor` runs ~14 checks across system (macOS version,
+architecture, Python), required tools (`mitmdump`, `xcrun`, `pam_tid.so`),
+optional features (rumps, Touch ID config, sudo cache, tray LaunchAgent),
+and runtime state (workspace, record session, mitmproxy CA, booted iOS
+simulators). Exit code: `0` all green, `2` warnings only, `3` errors.
+Each check that's not OK prints a `fix:` hint with the exact command to
+resolve it.
 
 ---
 
@@ -300,6 +309,7 @@ mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
 mitm-tracker tray    {run,install,uninstall,status}  # macOS menu bar indicator (extra: [tray])
 mitm-tracker setup   {install,uninstall,status}      # Touch ID + sudo cache + tray, one auth
+mitm-tracker doctor                                  # diagnose environment / report fixable issues
 ```
 
 Every subcommand accepts `--json` and returns a predictable structured
