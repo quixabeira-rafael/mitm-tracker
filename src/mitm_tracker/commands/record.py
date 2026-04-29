@@ -264,6 +264,16 @@ def cmd_stop(args: argparse.Namespace, *, kill: Callable[[int, int], None] | Non
         emit_json(payload)
     else:
         emit_text(f"record stopped (db={payload['session_db']})")
+
+    if not proxy_restored:
+        return emit_error(
+            "proxy_restore_failed",
+            f"daemon stopped, but the system proxy could not be restored: "
+            f"{proxy_error or 'unknown error'}. "
+            f"Run `networksetup -setwebproxystate <service> off` to clean up.",
+            json_mode=args.json_mode,
+            exit_code=EXIT_SYSTEM,
+        )
     return EXIT_OK
 
 

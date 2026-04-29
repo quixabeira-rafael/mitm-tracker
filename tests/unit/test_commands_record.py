@@ -186,6 +186,54 @@ def test_stop_marks_state_stopped(
     assert state["pid"] is None
 
 
+def test_stop_returns_error_when_proxy_restore_fails(
+    patched_environment, monkeypatch, capsys, tmp_repo: Path
+) -> None:
+    main(["record", "start", "--json"])
+    capsys.readouterr()
+
+    monkeypatch.setattr(record_module.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(session_module, "_default_pid_alive", lambda pid: False)
+
+    # Re-patch ProxyManager so the privileged restore returns non-zero,
+    # simulating the silent failure observed in the field (sudo/Touch ID/
+    # networksetup combination returning an error).
+    from mitm_tracker.proxy_manager import ProxyManager
+
+    def failing_privileged(commands, prompt):
+        import subprocess
+
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="sudo: a password is required"
+        )
+
+    def patched_init(self, *_a, **_kw):
+        self._runner = lambda args: subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        self._privileged_runner = failing_privileged
+
+    monkeypatch.setattr(ProxyManager, "__init__", patched_init)
+
+    rc = main(["record", "stop", "--json"])
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+
+    assert rc != EXIT_OK
+    # Daemon shutdown still happened: state moved to stopped, payload has stopped=true.
+    assert out["stopped"] is True
+    assert out["proxy_restored"] is False
+    assert out["proxy_error"]
+    # Error surfaced on stderr in JSON form so the tray can show a rumps.alert.
+    json_lines = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.strip().startswith("{")
+    ]
+    assert any(payload.get("error") == "proxy_restore_failed" for payload in json_lines)
+    # Backup file is preserved so a follow-up restore attempt can read it.
+    workspace = workspace_for(tmp_repo)
+    assert workspace.proxy_backup_path.exists()
+
+
 def test_logs_returns_no_logs_message_when_missing(tmp_repo: Path, capsys) -> None:
     rc = main(["record", "logs"])
     out = capsys.readouterr().out
