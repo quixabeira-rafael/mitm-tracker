@@ -66,12 +66,24 @@ pipx ensurepath
 
 git clone <this-repo>
 cd mitm-tracker
-pipx install -e ".[dev]"
+pipx install -e ".[dev,tray]"          # `tray` enables the menu bar indicator
 ```
 
 `pipx install -e .` installs the project in editable mode. The
 `mitm-tracker` command becomes available on your `PATH` and code changes in
 the source tree take effect on the next invocation.
+
+If you want the menu bar icon to launch automatically on every login, run
+the following one-time setup from the repo of the app you intend to debug:
+
+```bash
+cd /path/to/the/app/repo
+mitm-tracker tray install
+```
+
+That registers a per-user LaunchAgent that re-opens the indicator on every
+login. See [Visual status in the macOS menu bar](#visual-status-in-the-macos-menu-bar)
+for the full lifecycle commands (`status`, `uninstall`, ad-hoc `run`).
 
 Verify the install:
 
@@ -230,11 +242,13 @@ preserved.
 ### Visual status in the macOS menu bar
 
 ```bash
-pipx install -e ".[tray]"   # one-time: enable the optional rumps dep
-mitm-tracker tray           # opens an indicator in the menu bar
+pipx install -e ".[tray]"        # one-time: enable the optional rumps dep
+cd /path/to/the/app/repo
+mitm-tracker tray install        # one-time: auto-launch on every login
 ```
 
-The icon mirrors the daemon state:
+After `tray install`, an icon will appear in the menu bar immediately and
+on every subsequent login. The icon mirrors the daemon state:
 
 - 🟢 green — `mitmdump` is running and healthy
 - 🔴 red — not recording
@@ -242,8 +256,18 @@ The icon mirrors the daemon state:
   run `record stop` to clean up
 
 Click the icon to see the active profile, workspace path, and live PID/port,
-and to start/stop the record without leaving the menu bar. The tray itself
-is foreground — closing it does not stop the proxy.
+and to start/stop the record without leaving the menu bar.
+
+To manage the LaunchAgent later:
+
+```bash
+mitm-tracker tray status         # show install / load state and current PID
+mitm-tracker tray uninstall      # disable auto-launch (stops it now too)
+mitm-tracker tray run            # ad-hoc, foreground (no LaunchAgent)
+```
+
+The workspace path is captured at `tray install` time. To switch which
+project the tray watches, run `tray install` again from the new workspace.
 
 ---
 
@@ -257,7 +281,7 @@ mitm-tracker cert    {install,status,simulators}
 mitm-tracker record  {start,stop,status,logs}
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
-mitm-tracker tray    [--interval 2.0]                # macOS menu bar status indicator (extra: [tray])
+mitm-tracker tray    {run,install,uninstall,status}  # macOS menu bar indicator (extra: [tray])
 ```
 
 Every subcommand accepts `--json` and returns a predictable structured
