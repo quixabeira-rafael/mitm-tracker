@@ -118,6 +118,22 @@ simulators). Exit code: `0` all green, `2` warnings only, `3` errors.
 Each check that's not OK prints a `fix:` hint with the exact command to
 resolve it.
 
+### Claude Code skill (auto-discovered)
+
+The repository ships a [Claude Code](https://docs.claude.com/en/docs/claude-code)
+skill at [`.claude/skills/mitm-tracker/SKILL.md`](.claude/skills/mitm-tracker/SKILL.md).
+Cloning the repo and running Claude Code from within it makes the skill
+discoverable automatically — no copying or installation step needed.
+The skill teaches Claude how to use `mitm-tracker` end-to-end: capture
+APIs, mock responses, reproduce as curl, run `doctor`, manage the tray,
+plus all the gotchas accumulated from real use (CA-regen trap, zombie
+proxy detection, pre-Sonoma Touch ID limits, etc.).
+
+Precedence per Claude Code's
+[skill discovery](https://code.claude.com/docs/en/skills): enterprise >
+personal (`~/.claude/skills/`) > project (`.claude/skills/`). If you
+maintain a personal copy, it wins; otherwise the repo's copy is used.
+
 ---
 
 ## First-time setup for an iOS simulator workflow
