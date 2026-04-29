@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,46 @@ from mitm_tracker.output import (
 )
 
 _TMPDIR = Path.home() / ".mitm-tracker-setup-tmp"
+
+
+def _cleanup_artifacts(home: Path | None = None) -> dict:
+    home = home or Path.home()
+    log_path = home / "Library" / "Logs" / "mitm-tracker-tray.log"
+    tmp_path = home / ".mitm-tracker-setup-tmp"
+    mitmproxy_dir = home / ".mitmproxy"
+
+    log_removed = False
+    if log_path.exists():
+        try:
+            log_path.unlink()
+            log_removed = True
+        except OSError:
+            pass
+
+    tmpdir_removed = False
+    if tmp_path.exists():
+        try:
+            shutil.rmtree(tmp_path)
+            tmpdir_removed = True
+        except OSError:
+            pass
+
+    mitmproxy_removed = False
+    if mitmproxy_dir.exists():
+        try:
+            shutil.rmtree(mitmproxy_dir)
+            mitmproxy_removed = True
+        except OSError:
+            pass
+
+    return {
+        "log_path": str(log_path),
+        "log_removed": log_removed,
+        "tmpdir_path": str(tmp_path),
+        "tmpdir_removed": tmpdir_removed,
+        "mitmproxy_dir_path": str(mitmproxy_dir),
+        "mitmproxy_dir_removed": mitmproxy_removed,
+    }
 
 _ASKPASS_SCRIPT = """#!/bin/bash
 osascript <<'APPLESCRIPT'
@@ -169,7 +210,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
-    payload: dict = {"tray": None, "auth_setup": None}
+    payload: dict = {"tray": None, "auth_setup": None, "cleanup": None}
 
     tray_result = tray_launch_agent.uninstall()
     payload["tray"] = tray_result.to_dict()
@@ -187,6 +228,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             exit_code=EXIT_SYSTEM,
         )
     payload["auth_setup"] = auth_result.to_dict()
+
+    payload["cleanup"] = _cleanup_artifacts()
 
     if args.json_mode:
         emit_json(payload)
@@ -242,9 +285,15 @@ def _render_install_text(payload: dict) -> None:
 def _render_uninstall_text(payload: dict) -> None:
     tray = payload.get("tray") or {}
     auth = payload.get("auth_setup") or {}
+    cleanup = payload.get("cleanup") or {}
     lines = [
         f"tray:       removed={tray.get('plist_removed', False)} (was_loaded={tray.get('was_loaded', False)})",
         f"touch_id:   removed={auth.get('pam_local_removed', False)} stripped={auth.get('pam_local_line_stripped', False)}",
         f"sudo_cache: removed={auth.get('sudoers_removed', False)} skipped_unmanaged={auth.get('sudoers_skipped_unmanaged', False)}",
+        f"log:        removed={cleanup.get('log_removed', False)}",
+        f"tmpdir:     removed={cleanup.get('tmpdir_removed', False)}",
+        f"mitmproxy:  removed={cleanup.get('mitmproxy_dir_removed', False)} ({cleanup.get('mitmproxy_dir_path', '~/.mitmproxy')})",
+        "",
+        "Run `pipx uninstall mitm-tracker` to remove the application package itself.",
     ]
     emit_text("\n".join(lines))

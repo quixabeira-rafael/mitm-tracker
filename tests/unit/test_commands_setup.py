@@ -181,13 +181,55 @@ def test_cmd_install_workspace_not_found(tmp_path: Path, capsys) -> None:
 
 def test_cmd_uninstall(capsys) -> None:
     with patch.object(tray_launch_agent, "uninstall", return_value=_stub_tray_uninstall_result()), \
-         patch.object(auth_setup, "uninstall", return_value=_stub_uninstall_result()):
+         patch.object(auth_setup, "uninstall", return_value=_stub_uninstall_result()), \
+         patch.object(setup_commands, "_cleanup_artifacts", return_value={
+             "log_path": "/dev/null",
+             "log_removed": True,
+             "tmpdir_path": "/dev/null",
+             "tmpdir_removed": True,
+             "mitmproxy_dir_path": "/dev/null",
+             "mitmproxy_dir_removed": True,
+         }):
         rc = setup_commands.cmd_uninstall(_simple_args())
 
     assert rc == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
     assert payload["tray"]["plist_removed"] is True
     assert payload["auth_setup"]["sudoers_removed"] is True
+    assert payload["cleanup"]["log_removed"] is True
+    assert payload["cleanup"]["tmpdir_removed"] is True
+    assert payload["cleanup"]["mitmproxy_dir_removed"] is True
+
+
+def test_cleanup_artifacts_removes_existing_files(tmp_path: Path) -> None:
+    (tmp_path / "Library" / "Logs").mkdir(parents=True)
+    log = tmp_path / "Library" / "Logs" / "mitm-tracker-tray.log"
+    log.write_text("some log content")
+
+    setup_tmp = tmp_path / ".mitm-tracker-setup-tmp"
+    setup_tmp.mkdir()
+    (setup_tmp / "askpass.sh").write_text("#!/bin/bash")
+
+    mitmproxy = tmp_path / ".mitmproxy"
+    mitmproxy.mkdir()
+    (mitmproxy / "mitmproxy-ca.pem").write_text("CERT")
+
+    result = setup_commands._cleanup_artifacts(home=tmp_path)
+
+    assert result["log_removed"] is True
+    assert result["tmpdir_removed"] is True
+    assert result["mitmproxy_dir_removed"] is True
+    assert not log.exists()
+    assert not setup_tmp.exists()
+    assert not mitmproxy.exists()
+
+
+def test_cleanup_artifacts_no_op_when_nothing_present(tmp_path: Path) -> None:
+    result = setup_commands._cleanup_artifacts(home=tmp_path)
+
+    assert result["log_removed"] is False
+    assert result["tmpdir_removed"] is False
+    assert result["mitmproxy_dir_removed"] is False
 
 
 def test_cmd_status(tmp_path: Path, capsys) -> None:
