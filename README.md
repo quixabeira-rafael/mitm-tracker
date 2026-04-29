@@ -64,7 +64,7 @@ the macOS system proxy.
 brew install mitmproxy pipx
 pipx ensurepath
 
-git clone <this-repo>
+git clone https://github.com/quixabeira-rafael/mitm-tracker.git
 cd mitm-tracker
 pipx install -e ".[dev,tray]"          # `tray` enables the menu bar indicator
 ```
