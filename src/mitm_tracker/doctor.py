@@ -9,7 +9,9 @@ from pathlib import Path
 
 from mitm_tracker import auth_setup, claude_skill, tray_launch_agent
 from mitm_tracker.config import workspace_for
+from mitm_tracker.profile_manager import ProfileError, ProfileManager
 from mitm_tracker.session_manager import SessionManager
+from mitm_tracker.ssl_list import SslList
 
 STATUS_OK = "ok"
 STATUS_WARN = "warn"
@@ -301,6 +303,43 @@ def check_tray_launch_agent() -> CheckResult:
     )
 
 
+def check_active_profile_ssl_list() -> CheckResult:
+    ws = workspace_for()
+    if not ws.base.exists():
+        return CheckResult(
+            name="Active profile SSL list",
+            status=STATUS_INFO,
+            detail="no workspace in cwd",
+            group="state",
+        )
+    pm = ProfileManager(ws)
+    try:
+        profile = pm.active_name()
+        ssl = SslList.load(ws.ssl_path(profile))
+    except (ProfileError, OSError) as exc:
+        return CheckResult(
+            name="Active profile SSL list",
+            status=STATUS_WARN,
+            detail=f"could not load SSL list: {exc}",
+            group="state",
+        )
+    count = len(ssl.entries)
+    if count == 0:
+        return CheckResult(
+            name="Active profile SSL list",
+            status=STATUS_WARN,
+            detail=f"profile '{profile}' has 0 hosts; record will run in passthrough mode (no HTTPS capture)",
+            fix=f'mitm-tracker ssl add "*.api.example.com" --profile {profile}',
+            group="state",
+        )
+    return CheckResult(
+        name="Active profile SSL list",
+        status=STATUS_OK,
+        detail=f"profile '{profile}' has {count} hosts",
+        group="state",
+    )
+
+
 def check_workspace() -> CheckResult:
     ws = workspace_for()
     if ws.base.exists():
@@ -426,6 +465,7 @@ def run_all_checks() -> list[CheckResult]:
         check_tray_launch_agent(),
         check_claude_skill(),
         check_workspace(),
+        check_active_profile_ssl_list(),
         check_record_session(),
         check_mitmproxy_ca(),
         check_booted_simulators(),

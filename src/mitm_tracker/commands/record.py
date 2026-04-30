@@ -126,7 +126,9 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
                 exit_code=EXIT_SYSTEM,
             )
 
-    allow_regex = SslList.load(workspace.ssl_path(profile)).to_allow_hosts_regex()
+    ssl_list = SslList.load(workspace.ssl_path(profile))
+    allow_regex = ssl_list.to_allow_hosts_regex()
+    ssl_count = len(ssl_list.entries)
 
     maplocal_dir = workspace.profile_dir(profile)
 
@@ -183,7 +185,8 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
         "port": state["port"],
         "profile": profile,
         "session_db": state["session_db"],
-        "ssl_decryption_active": allow_regex is not None,
+        "ssl_decryption_active": ssl_count > 0,
+        "ssl_list_count": ssl_count,
         "proxy_service": proxy_service,
         "no_cache": no_cache,
     }
@@ -197,6 +200,13 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
                 mode=payload["mode"],
                 db=payload["session_db"],
             )
+        )
+    if ssl_count == 0:
+        emit_text(
+            "warning: SSL list is empty for profile '{p}'; HTTPS will pass "
+            "through without decryption (no flow bodies will be captured). "
+            "Add hosts with `mitm-tracker ssl add <pattern>` and restart record.".format(p=profile),
+            stream=sys.stderr,
         )
     return EXIT_OK
 
@@ -362,7 +372,7 @@ def _build_mitmdump_command(
     listen_port: int,
     db_path: Path,
     mode: str,
-    allow_regex: str | None,
+    allow_regex: str,
     maplocal_dir: Path | None = None,
     no_cache: bool = True,
 ) -> list[str]:
@@ -384,8 +394,7 @@ def _build_mitmdump_command(
     ]
     if maplocal_dir is not None:
         cmd.extend(["--set", f"tracker_maplocal_dir={maplocal_dir}"])
-    if allow_regex:
-        cmd.extend(["--allow-hosts", allow_regex])
+    cmd.extend(["--allow-hosts", allow_regex])
     return cmd
 
 

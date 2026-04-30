@@ -84,9 +84,14 @@ class SslList:
                 return entry.pattern
         return None
 
-    def to_allow_hosts_regex(self) -> str | None:
+    def to_allow_hosts_regex(self) -> str:
         if not self.entries:
-            return None
+            # An impossible-match regex: forces mitmproxy into TLS passthrough
+            # for every host (no decryption). Without this fallback, an empty
+            # SSL list would omit --allow-hosts entirely, which makes mitmproxy
+            # decrypt EVERY connection by default — and since the macOS host
+            # doesn't trust the mitmproxy CA, all HTTPS on the machine breaks.
+            return "(?!.*)"
         alternatives = [_pattern_to_regex(e.pattern) for e in self.entries]
         body = "|".join(alternatives)
         return f"^(?:{body})(?::\\d+)?$"

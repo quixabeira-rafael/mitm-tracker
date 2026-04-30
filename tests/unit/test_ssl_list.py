@@ -85,9 +85,18 @@ def test_matches_is_case_insensitive(tmp_path: Path) -> None:
     assert sl.matches("API.example.com") == "api.example.com"
 
 
-def test_to_allow_hosts_regex_returns_none_when_empty(tmp_path: Path) -> None:
+def test_to_allow_hosts_regex_when_empty_returns_impossible_match(tmp_path: Path) -> None:
+    """An empty SSL list must return a regex that matches NO host, so mitmproxy
+    falls back to TLS passthrough for everything (instead of decrypting all
+    HTTPS by default — which would break the whole machine since the macOS
+    host doesn't trust the mitmproxy CA)."""
     sl = SslList(path=tmp_path / "ssl.json")
-    assert sl.to_allow_hosts_regex() is None
+    regex = sl.to_allow_hosts_regex()
+    assert regex is not None
+    pattern = re.compile(regex)
+    # No real host should match this regex.
+    for sample in ["api.example.com", "google.com", "127.0.0.1", "localhost", "example.com:443"]:
+        assert pattern.search(sample) is None, f"impossible regex matched {sample!r}"
 
 
 def test_allow_hosts_regex_includes_listed_hosts(tmp_path: Path) -> None:

@@ -148,6 +148,28 @@ def test_start_includes_ignore_hosts_when_ssl_list_present(
     assert "--allow-hosts" in joined
 
 
+def test_start_passes_impossible_regex_when_ssl_list_empty(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    """Critical safety check: an empty SSL list must still pass --allow-hosts
+    with a regex that matches nothing — otherwise mitmproxy decrypts every
+    HTTPS connection by default and the macOS host (which doesn't trust the
+    mitmproxy CA) loses internet access."""
+    rc = main(["record", "start", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == EXIT_OK
+    assert payload["ssl_decryption_active"] is False
+    assert payload["ssl_list_count"] == 0
+    cmd = patched_environment["captured_cmd"][-1]
+    # The exact impossible regex from ssl_list.py.
+    assert "--allow-hosts" in cmd
+    idx = cmd.index("--allow-hosts")
+    assert cmd[idx + 1] == "(?!.*)"
+    # And the warning is on stderr.
+    assert "SSL list is empty" in captured.err
+
+
 def test_status_reflects_running_state(patched_environment, capsys, tmp_repo: Path) -> None:
     main(["record", "start", "--json"])
     capsys.readouterr()
