@@ -349,6 +349,7 @@ mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
 mitm-tracker tray    {run,install,uninstall,status}  # macOS menu bar indicator (extra: [tray])
 mitm-tracker setup   {install,uninstall,status}      # Touch ID + sudo cache + tray + (optional) Claude skill
 mitm-tracker skill   {install,uninstall,status}      # Symlink Claude Code skill into ~/.claude/skills/
+mitm-tracker cert host {install,uninstall,status}    # Trust the mitmproxy CA system-wide on this Mac (DANGEROUS)
 mitm-tracker doctor                                  # diagnose environment / report fixable issues
 ```
 
@@ -376,6 +377,61 @@ hosts.
 Wildcards: `*.example.com` matches `api.example.com`, `v1.api.example.com`,
 etc., but not the bare `example.com`. Use a separate entry for the apex
 domain if you need it.
+
+---
+
+## Decrypting HTTPS originating from the Mac host (optional, dangerous)
+
+By default, `mitm-tracker cert install` only trusts the mitmproxy CA inside
+iOS Simulators. To debug HTTPS coming from the Mac itself (Safari, native
+apps, OS processes), the CA also needs to be trusted in the macOS System
+Keychain. Use the dedicated host subcommands:
+
+```bash
+mitm-tracker cert host install         # add to System.keychain as trustRoot
+mitm-tracker cert host status          # show install/trust state and any siblings
+mitm-tracker cert host uninstall       # remove only the entries we created
+```
+
+This is **system-wide** and trusts the CA for ALL TLS connections — Safari,
+App Store, OS updates, every app and process. Only do it on a personal
+debugging machine, and always reverse with `cert host uninstall` when done.
+
+The mitmproxy private key lives at `~/.mitmproxy/mitmproxy-ca.pem`. Anyone
+with read access to that file can intercept your TLS traffic. The
+confirmation banner `cert host install` prints reminds you of this every
+run; pass `--yes` to skip the banner.
+
+Behaviour:
+
+- Idempotent: re-running with the same SHA1 already trusted is a no-op.
+- Stale-replacing: if `~/.mitmproxy` was wiped and the CA was regenerated,
+  `cert host install` automatically removes the previous mitm-tracker-managed
+  CA(s) before adding the current one. No trust orphans accumulate.
+- Managed-only uninstall: only removes CAs we added (tracked in
+  `~/.mitmproxy/host_installed_shas.json`). CAs from Charles Proxy or
+  another mitmproxy install with the same CN are reported and left alone.
+- Post-install verification: `security verify-cert -p ssl` is run; if it
+  fails, the command returns a system-error exit code and points at
+  `--force` plus a recovery snippet.
+- Compatible with macOS Big Sur 11 → Sonoma 14 → Sequoia 15 → 26, on Intel
+  and Apple Silicon. SIP does not protect `/Library/Keychains/System.keychain`.
+
+If something goes wrong and you want to nuke every mitmproxy CA from the
+System Keychain manually (e.g. you lost `~/.mitmproxy/`):
+
+```bash
+sudo /usr/bin/security find-certificate -Z -a -c "mitmproxy" /Library/Keychains/System.keychain \
+  | awk '/SHA-1 hash:/ {print $3}' \
+  | while read sha; do
+      sudo /usr/bin/security find-certificate -Z "$sha" -p /Library/Keychains/System.keychain > /tmp/_m.pem
+      sudo /usr/bin/security remove-trusted-cert -d /tmp/_m.pem
+      sudo /usr/bin/security delete-certificate -Z "$sha" /Library/Keychains/System.keychain
+    done
+rm -f /tmp/_m.pem
+```
+
+`mitm-tracker doctor` reports the host-CA state in the "optional" group.
 
 ---
 

@@ -197,6 +197,120 @@ def test_aggregate_status_ok_when_all_ok_or_info() -> None:
     assert doctor.aggregate_status(results) == doctor.STATUS_OK
 
 
+def test_host_ca_check_when_pem_missing(monkeypatch) -> None:
+    from mitm_tracker import host_ca
+
+    stub = host_ca.HostCaStatusResult(
+        ca_path=None,
+        current_sha1_hex=None,
+        current_sha1_colons=None,
+        system_keychain_path=host_ca.SYSTEM_KEYCHAIN,
+        installed_current=False,
+        trusted_current=False,
+        matching_cn=[],
+    )
+    monkeypatch.setattr(host_ca, "status", lambda: stub)
+    result = doctor.check_host_ca()
+    assert result.status == doctor.STATUS_INFO
+    assert "not generated yet" in result.detail
+
+
+def test_host_ca_check_when_installed_and_trusted(monkeypatch) -> None:
+    from pathlib import Path as _P
+    from mitm_tracker import host_ca
+
+    match = host_ca.HostCaMatch(
+        sha1_hex="AABBCC", sha1_colons="AA:BB:CC",
+        is_current=True, is_managed=True, is_trusted=True,
+    )
+    stub = host_ca.HostCaStatusResult(
+        ca_path=_P("/home/u/.mitmproxy/ca.pem"),
+        current_sha1_hex="AABBCC",
+        current_sha1_colons="AA:BB:CC",
+        system_keychain_path=host_ca.SYSTEM_KEYCHAIN,
+        installed_current=True,
+        trusted_current=True,
+        matching_cn=[match],
+    )
+    monkeypatch.setattr(host_ca, "status", lambda: stub)
+    monkeypatch.setattr(host_ca, "read_installed_log", lambda: {"AABBCC"})
+    result = doctor.check_host_ca()
+    assert result.status == doctor.STATUS_OK
+
+
+def test_host_ca_check_when_present_but_not_trusted(monkeypatch) -> None:
+    from pathlib import Path as _P
+    from mitm_tracker import host_ca
+
+    match = host_ca.HostCaMatch(
+        sha1_hex="AABBCC", sha1_colons="AA:BB:CC",
+        is_current=True, is_managed=True, is_trusted=False,
+    )
+    stub = host_ca.HostCaStatusResult(
+        ca_path=_P("/home/u/.mitmproxy/ca.pem"),
+        current_sha1_hex="AABBCC",
+        current_sha1_colons="AA:BB:CC",
+        system_keychain_path=host_ca.SYSTEM_KEYCHAIN,
+        installed_current=True,
+        trusted_current=False,
+        matching_cn=[match],
+    )
+    monkeypatch.setattr(host_ca, "status", lambda: stub)
+    monkeypatch.setattr(host_ca, "read_installed_log", lambda: {"AABBCC"})
+    result = doctor.check_host_ca()
+    assert result.status == doctor.STATUS_WARN
+    assert "--force" in (result.fix or "")
+
+
+def test_host_ca_check_when_stale_managed_present(monkeypatch) -> None:
+    from pathlib import Path as _P
+    from mitm_tracker import host_ca
+
+    stale = host_ca.HostCaMatch(
+        sha1_hex="STALE1", sha1_colons="ST:AL:E1",
+        is_current=False, is_managed=True, is_trusted=False,
+    )
+    stub = host_ca.HostCaStatusResult(
+        ca_path=_P("/home/u/.mitmproxy/ca.pem"),
+        current_sha1_hex="CURRENT",
+        current_sha1_colons="CU:RR:EN:T",
+        system_keychain_path=host_ca.SYSTEM_KEYCHAIN,
+        installed_current=False,
+        trusted_current=False,
+        matching_cn=[stale],
+    )
+    monkeypatch.setattr(host_ca, "status", lambda: stub)
+    monkeypatch.setattr(host_ca, "read_installed_log", lambda: {"STALE1"})
+    result = doctor.check_host_ca()
+    assert result.status == doctor.STATUS_WARN
+    assert "uninstall" in (result.fix or "")
+
+
+def test_host_ca_check_when_other_unmanaged_only(monkeypatch) -> None:
+    """A CA from another tool (CN matches but not in our log) → INFO, not WARN."""
+    from pathlib import Path as _P
+    from mitm_tracker import host_ca
+
+    other = host_ca.HostCaMatch(
+        sha1_hex="OTHER1", sha1_colons="OT:HE:R1",
+        is_current=False, is_managed=False, is_trusted=False,
+    )
+    stub = host_ca.HostCaStatusResult(
+        ca_path=_P("/home/u/.mitmproxy/ca.pem"),
+        current_sha1_hex="CURRENT",
+        current_sha1_colons="CU:RR:EN:T",
+        system_keychain_path=host_ca.SYSTEM_KEYCHAIN,
+        installed_current=False,
+        trusted_current=False,
+        matching_cn=[other],
+    )
+    monkeypatch.setattr(host_ca, "status", lambda: stub)
+    monkeypatch.setattr(host_ca, "read_installed_log", lambda: set())
+    result = doctor.check_host_ca()
+    assert result.status == doctor.STATUS_INFO
+    assert "not installed" in result.detail
+
+
 def test_run_all_checks_returns_list() -> None:
     results = doctor.run_all_checks()
     assert isinstance(results, list)

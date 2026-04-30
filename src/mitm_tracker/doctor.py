@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mitm_tracker import auth_setup, claude_skill, tray_launch_agent
+from mitm_tracker import auth_setup, claude_skill, host_ca, tray_launch_agent
 from mitm_tracker.config import workspace_for
 from mitm_tracker.profile_manager import ProfileError, ProfileManager
 from mitm_tracker.session_manager import SessionManager
@@ -303,6 +303,73 @@ def check_tray_launch_agent() -> CheckResult:
     )
 
 
+def check_host_ca() -> CheckResult:
+    try:
+        st = host_ca.status()
+    except Exception as exc:
+        return CheckResult(
+            name="Host CA",
+            status=STATUS_INFO,
+            detail=f"could not query System Keychain: {exc}",
+            group="optional",
+        )
+    if st.ca_path is None:
+        return CheckResult(
+            name="Host CA",
+            status=STATUS_INFO,
+            detail="mitmproxy CA not generated yet (run `mitm-tracker record start` once)",
+            group="optional",
+        )
+    log = host_ca.read_installed_log()
+    stale_in_keychain = [
+        m for m in st.matching_cn if not m.is_current and m.sha1_hex in log
+    ]
+    other_in_keychain = [
+        m for m in st.matching_cn if not m.is_current and m.sha1_hex not in log
+    ]
+    if st.installed_current and st.trusted_current:
+        detail = "trusted as root in /Library/Keychains/System.keychain"
+        if other_in_keychain:
+            detail += f" (note: {len(other_in_keychain)} unmanaged mitmproxy CA(s) also present)"
+        if stale_in_keychain:
+            return CheckResult(
+                name="Host CA",
+                status=STATUS_WARN,
+                detail=(
+                    f"current CA trusted, but {len(stale_in_keychain)} stale "
+                    "mitm-tracker-managed CA(s) still in keychain"
+                ),
+                fix="mitm-tracker cert host install --force   # cleans up stale entries",
+                group="optional",
+            )
+        return CheckResult(name="Host CA", status=STATUS_OK, detail=detail, group="optional")
+    if st.installed_current and not st.trusted_current:
+        return CheckResult(
+            name="Host CA",
+            status=STATUS_WARN,
+            detail="cert is in the keychain but trust setting is missing or rejected",
+            fix="mitm-tracker cert host install --force",
+            group="optional",
+        )
+    if stale_in_keychain:
+        return CheckResult(
+            name="Host CA",
+            status=STATUS_WARN,
+            detail=(
+                f"current CA NOT installed, but {len(stale_in_keychain)} stale "
+                "mitm-tracker-managed CA(s) are still in the keychain"
+            ),
+            fix="mitm-tracker cert host uninstall   # cleans them up",
+            group="optional",
+        )
+    return CheckResult(
+        name="Host CA",
+        status=STATUS_INFO,
+        detail="not installed; HTTPS originating from the Mac host won't be decrypted",
+        group="optional",
+    )
+
+
 def check_active_profile_ssl_list() -> CheckResult:
     ws = workspace_for()
     if not ws.base.exists():
@@ -464,6 +531,7 @@ def run_all_checks() -> list[CheckResult]:
         check_sudo_cache_setup(),
         check_tray_launch_agent(),
         check_claude_skill(),
+        check_host_ca(),
         check_workspace(),
         check_active_profile_ssl_list(),
         check_record_session(),
