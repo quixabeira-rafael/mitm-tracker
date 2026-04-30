@@ -164,23 +164,52 @@ def write_installed_log(shas: Iterable[str]) -> None:
 # --- PEM extraction for stale CAs --------------------------------------------
 
 
+_PEM_BLOCK_RE = re.compile(
+    r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+    re.DOTALL,
+)
+
+
 def extract_pem_for_sha(
     sha_hex: str, dest: Path, *, runner: Runner | None = None
 ) -> bool:
-    """Use `security find-certificate -p` to dump the PEM of a cert already
-    in the keychain. Required so we can call `remove-trusted-cert -d <pem>`
-    on stale entries whose original PEM file is no longer on disk."""
+    """Dump the PEM of a cert that's already in the System Keychain whose
+    SHA-1 matches `sha_hex`. We need the PEM (not just the hash) so we can
+    feed it to `remove-trusted-cert -d <pem>` on stale entries whose
+    original PEM file is no longer on disk.
+
+    `security find-certificate` does NOT have a filter-by-hash flag (`-Z`
+    on find-certificate is *output*, on delete-certificate it's the *filter*
+    — different enough that we can't rely on it here). We use `-a -p -c`
+    to dump every PEM under the mitmproxy CN, then locally hash each block
+    and pick the matching one."""
+    import hashlib
+
     runner = runner or _default_runner
     proc = runner(
-        [SECURITY_BIN, "find-certificate", "-Z", sha_hex, "-p", SYSTEM_KEYCHAIN]
+        [
+            SECURITY_BIN,
+            "find-certificate",
+            "-a",
+            "-p",
+            "-c",
+            MITMPROXY_CN_SUBSTRING,
+            SYSTEM_KEYCHAIN,
+        ]
     )
     if proc.returncode != 0:
         return False
-    if "BEGIN CERTIFICATE" not in proc.stdout:
-        return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(proc.stdout, encoding="ascii")
-    return True
+    target = sha_hex.upper().replace(":", "")
+    for block in _PEM_BLOCK_RE.findall(proc.stdout):
+        try:
+            der = cert_manager._pem_to_der(block)
+        except Exception:
+            continue
+        if hashlib.sha1(der).hexdigest().upper() == target:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(block + "\n", encoding="ascii")
+            return True
+    return False
 
 
 # --- Command builders --------------------------------------------------------

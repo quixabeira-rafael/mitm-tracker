@@ -132,25 +132,62 @@ def test_log_returns_empty_on_corrupt_json(tmp_path: Path, monkeypatch) -> None:
     assert host_ca.read_installed_log() == set()
 
 
-def test_extract_pem_for_sha_writes_file(tmp_path: Path) -> None:
-    pem_text = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
-    runner = MagicMock(return_value=_result(stdout=pem_text))
+def test_extract_pem_for_sha_picks_matching_block(tmp_path: Path) -> None:
+    """find-certificate has no filter-by-hash flag; we dump all matching CN
+    and locally hash each block to pick the right one."""
+    import base64
+    import hashlib
+
+    # Build two valid PEM blocks with known DER+SHA
+    der_a = b"\x00" * 32
+    der_b = b"\x11" * 32
+    pem_a = (
+        "-----BEGIN CERTIFICATE-----\n"
+        + base64.encodebytes(der_a).decode().strip()
+        + "\n-----END CERTIFICATE-----"
+    )
+    pem_b = (
+        "-----BEGIN CERTIFICATE-----\n"
+        + base64.encodebytes(der_b).decode().strip()
+        + "\n-----END CERTIFICATE-----"
+    )
+    sha_b = hashlib.sha1(der_b).hexdigest().upper()
+    combined = pem_a + "\n" + pem_b + "\n"
+
+    runner = MagicMock(return_value=_result(stdout=combined))
     dest = tmp_path / "out.pem"
-    assert host_ca.extract_pem_for_sha("AABB", dest, runner=runner) is True
-    assert dest.read_text() == pem_text
+    assert host_ca.extract_pem_for_sha(sha_b, dest, runner=runner) is True
+    written = dest.read_text()
+    assert "-----BEGIN CERTIFICATE-----" in written
+    # Verify it picked the correct block (B, not A)
+    assert hashlib.sha1(host_ca.cert_manager._pem_to_der(written)).hexdigest().upper() == sha_b
     args = runner.call_args[0][0]
     assert args == [
         host_ca.SECURITY_BIN,
         "find-certificate",
-        "-Z",
-        "AABB",
+        "-a",
         "-p",
+        "-c",
+        host_ca.MITMPROXY_CN_SUBSTRING,
         host_ca.SYSTEM_KEYCHAIN,
     ]
 
 
-def test_extract_pem_for_sha_returns_false_on_invalid_output(tmp_path: Path) -> None:
-    runner = MagicMock(return_value=_result(stdout="garbage"))
+def test_extract_pem_for_sha_returns_false_when_no_match(tmp_path: Path) -> None:
+    import base64
+
+    der = b"\x00" * 32
+    pem = (
+        "-----BEGIN CERTIFICATE-----\n"
+        + base64.encodebytes(der).decode().strip()
+        + "\n-----END CERTIFICATE-----"
+    )
+    runner = MagicMock(return_value=_result(stdout=pem))
+    assert host_ca.extract_pem_for_sha("DEADBEEF" * 5, tmp_path / "out.pem", runner=runner) is False
+
+
+def test_extract_pem_for_sha_returns_false_on_security_failure(tmp_path: Path) -> None:
+    runner = MagicMock(return_value=_result(returncode=44))
     assert host_ca.extract_pem_for_sha("AA", tmp_path / "out.pem", runner=runner) is False
 
 
@@ -216,20 +253,26 @@ def test_install_skips_when_already_trusted(tmp_path: Path, monkeypatch) -> None
 
 def test_install_replaces_stale_sha(tmp_path: Path, monkeypatch) -> None:
     pem = _make_pem(tmp_path)
-    sha_no_colons, _ = host_ca.current_ca_sha1(pem)
     other_sha = "1122334455667788990011223344556677889900"
 
     enum_stdout = f"SHA-1 hash: {other_sha}\n"
-    extract_stdout = "-----BEGIN CERTIFICATE-----\nXXXX\n-----END CERTIFICATE-----\n"
 
     runner = MagicMock(side_effect=[
         _result(stdout=_OPENSSL_TEXT_VALID),       # validate_pem_is_root_ca
         _result(stdout=enum_stdout),               # enumerate (only stale)
-        _result(stdout=extract_stdout),            # extract pem for stale
         _result(returncode=0),                     # is_trusted post-install
     ])
     privileged = MagicMock(return_value=_result(returncode=0))
     monkeypatch.setattr(host_ca, "INSTALLED_LOG", tmp_path / "log.json")
+
+    # Stub extract_pem_for_sha so the test doesn't depend on the parsing
+    # path of `security find-certificate -a -p`.
+    def fake_extract(sha, dest, *, runner=None):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(f"-----BEGIN CERTIFICATE-----\n{sha}\n-----END CERTIFICATE-----\n")
+        return True
+
+    monkeypatch.setattr(host_ca, "extract_pem_for_sha", fake_extract)
 
     result = host_ca.install(
         ca_path=pem,
@@ -298,13 +341,18 @@ def test_uninstall_managed_only(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(host_ca, "INSTALLED_LOG", log_path)
 
     enum_stdout = f"SHA-1 hash: {sha_a}\nSHA-1 hash: {sha_b}\n"
-    extract_stdout = "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n"
 
     runner = MagicMock(side_effect=[
         _result(stdout=enum_stdout),
-        _result(stdout=extract_stdout),  # extract pem for sha_a
     ])
     privileged = MagicMock(return_value=_result(returncode=0))
+
+    def fake_extract(sha, dest, *, runner=None):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(f"-----BEGIN CERTIFICATE-----\n{sha}\n-----END CERTIFICATE-----\n")
+        return True
+
+    monkeypatch.setattr(host_ca, "extract_pem_for_sha", fake_extract)
 
     result = host_ca.uninstall(
         ca_path=pem,
@@ -326,12 +374,17 @@ def test_uninstall_falls_back_to_current_sha_when_log_missing(
     log_path = tmp_path / "log.json"  # absent
     monkeypatch.setattr(host_ca, "INSTALLED_LOG", log_path)
 
-    extract_stdout = "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n"
     runner = MagicMock(side_effect=[
         _result(stdout=f"SHA-1 hash: {sha}\n"),
-        _result(stdout=extract_stdout),
     ])
     privileged = MagicMock(return_value=_result(returncode=0))
+
+    def fake_extract(sha_arg, dest, *, runner=None):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(f"-----BEGIN CERTIFICATE-----\n{sha_arg}\n-----END CERTIFICATE-----\n")
+        return True
+
+    monkeypatch.setattr(host_ca, "extract_pem_for_sha", fake_extract)
 
     result = host_ca.uninstall(
         ca_path=pem,
