@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -479,6 +480,108 @@ def check_mitmproxy_ca() -> CheckResult:
     return CheckResult(name="mitmproxy CA", status=STATUS_INFO, detail=f"{ca_path} ({fingerprint})", group="state")
 
 
+_VPN_IFACE_RE = re.compile(r"^(?:utun|ppp|ipsec|tap|tun)\d+$")
+
+
+@dataclass(frozen=True)
+class VpnSignal:
+    default_route_ifaces: tuple[str, ...]
+    tunnel_ifaces_with_ip: tuple[str, ...]
+
+    @property
+    def default_route_hijacked(self) -> bool:
+        return bool(self.default_route_ifaces)
+
+    @property
+    def any_tunnel_up(self) -> bool:
+        return bool(self.tunnel_ifaces_with_ip)
+
+
+def _parse_default_route_tunnels(netstat_output: str) -> list[str]:
+    tunnels: list[str] = []
+    for line in netstat_output.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0] != "default":
+            continue
+        netif = parts[3]
+        if _VPN_IFACE_RE.match(netif):
+            tunnels.append(netif)
+    return tunnels
+
+
+def _parse_tunnel_ifaces_with_ip(ifconfig_output: str) -> list[str]:
+    tunnels: list[str] = []
+    current: str | None = None
+    has_ip = False
+    for line in ifconfig_output.splitlines():
+        if line and not line.startswith("\t") and not line.startswith(" "):
+            if current and has_ip:
+                tunnels.append(current)
+            name = line.split(":", 1)[0]
+            current = name if _VPN_IFACE_RE.match(name) else None
+            has_ip = False
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("inet ") and not stripped.startswith("inet 169.254."):
+            has_ip = True
+    if current and has_ip:
+        tunnels.append(current)
+    return tunnels
+
+
+def _detect_vpn_signal() -> VpnSignal:
+    try:
+        netstat = _run(["netstat", "-nr", "-f", "inet"])
+        netstat_out = netstat.stdout if netstat.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        netstat_out = ""
+    try:
+        ifconfig = _run(["ifconfig", "-a"])
+        ifconfig_out = ifconfig.stdout if ifconfig.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        ifconfig_out = ""
+    return VpnSignal(
+        default_route_ifaces=tuple(_parse_default_route_tunnels(netstat_out)),
+        tunnel_ifaces_with_ip=tuple(_parse_tunnel_ifaces_with_ip(ifconfig_out)),
+    )
+
+
+def check_vpn_active() -> CheckResult:
+    signal = _detect_vpn_signal()
+    if signal.default_route_hijacked:
+        ifaces = ", ".join(signal.default_route_ifaces)
+        return CheckResult(
+            name="VPN",
+            status=STATUS_WARN,
+            detail=(
+                f"default route goes through VPN interface ({ifaces}); "
+                "iOS Simulator traffic will bypass mitmproxy"
+            ),
+            fix="disconnect the VPN (or configure split-tunnel to exclude 127.0.0.1) and run `record stop && record start`",
+            group="state",
+        )
+    if signal.any_tunnel_up:
+        ifaces = ", ".join(signal.tunnel_ifaces_with_ip)
+        return CheckResult(
+            name="VPN",
+            status=STATUS_WARN,
+            detail=(
+                f"VPN-like interface(s) up with IP ({ifaces}); "
+                "split-tunnel may route some hosts off-proxy"
+            ),
+            fix="if capture is missing flows, disconnect the VPN and re-run `record start`",
+            group="state",
+        )
+    return CheckResult(
+        name="VPN",
+        status=STATUS_OK,
+        detail="no active VPN detected",
+        group="state",
+    )
+
+
 def check_booted_simulators() -> CheckResult:
     if shutil.which("xcrun") is None:
         return CheckResult(
@@ -535,6 +638,7 @@ def run_all_checks() -> list[CheckResult]:
         check_workspace(),
         check_active_profile_ssl_list(),
         check_record_session(),
+        check_vpn_active(),
         check_mitmproxy_ca(),
         check_booted_simulators(),
     ]

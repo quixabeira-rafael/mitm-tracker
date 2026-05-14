@@ -171,6 +171,109 @@ def test_tray_launch_agent_not_installed(monkeypatch) -> None:
     assert result.status == doctor.STATUS_WARN
 
 
+_NETSTAT_VPN_DEFAULT = """Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+default            10.5.0.2           UGScg               utun6
+default            192.168.1.1        UGScIg                en0
+10.5.0.2/32        link#29            UCS                 utun6
+127                127.0.0.1          UCS                   lo0
+"""
+
+_NETSTAT_NO_VPN = """Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+default            192.168.1.1        UGScg                 en0
+127                127.0.0.1          UCS                   lo0
+"""
+
+_IFCONFIG_VPN_UP = """en0: flags=8863<UP> mtu 1500
+\tinet 192.168.1.44 netmask 0xffffff00 broadcast 192.168.1.255
+utun6: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1420
+\tinet 10.5.0.2 --> 10.5.0.2 netmask 0xffff0000
+utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380
+"""
+
+_IFCONFIG_NO_VPN = """en0: flags=8863<UP> mtu 1500
+\tinet 192.168.1.44 netmask 0xffffff00 broadcast 192.168.1.255
+utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380
+"""
+
+
+def test_parse_default_route_tunnels_detects_vpn() -> None:
+    tunnels = doctor._parse_default_route_tunnels(_NETSTAT_VPN_DEFAULT)
+    assert tunnels == ["utun6"]
+
+
+def test_parse_default_route_tunnels_skips_non_tunnel_default() -> None:
+    assert doctor._parse_default_route_tunnels(_NETSTAT_NO_VPN) == []
+
+
+def test_parse_tunnel_ifaces_with_ip_returns_only_those_with_inet() -> None:
+    ifaces = doctor._parse_tunnel_ifaces_with_ip(_IFCONFIG_VPN_UP)
+    assert ifaces == ["utun6"]
+
+
+def test_parse_tunnel_ifaces_with_ip_empty_when_no_inet() -> None:
+    assert doctor._parse_tunnel_ifaces_with_ip(_IFCONFIG_NO_VPN) == []
+
+
+def test_check_vpn_active_warns_when_default_route_via_tunnel(monkeypatch) -> None:
+    def fake_run(cmd: list[str]) -> subprocess.CompletedProcess:
+        if cmd[0] == "netstat":
+            return _result(stdout=_NETSTAT_VPN_DEFAULT)
+        if cmd[0] == "ifconfig":
+            return _result(stdout=_IFCONFIG_VPN_UP)
+        return _result()
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+    result = doctor.check_vpn_active()
+    assert result.status == doctor.STATUS_WARN
+    assert "utun6" in result.detail
+    assert "bypass mitmproxy" in result.detail
+    assert result.fix is not None
+
+
+def test_check_vpn_active_warns_on_split_tunnel(monkeypatch) -> None:
+    def fake_run(cmd: list[str]) -> subprocess.CompletedProcess:
+        if cmd[0] == "netstat":
+            return _result(stdout=_NETSTAT_NO_VPN)
+        if cmd[0] == "ifconfig":
+            return _result(stdout=_IFCONFIG_VPN_UP)
+        return _result()
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+    result = doctor.check_vpn_active()
+    assert result.status == doctor.STATUS_WARN
+    assert "split-tunnel" in result.detail
+    assert "utun6" in result.detail
+
+
+def test_check_vpn_active_ok_when_no_tunnel(monkeypatch) -> None:
+    def fake_run(cmd: list[str]) -> subprocess.CompletedProcess:
+        if cmd[0] == "netstat":
+            return _result(stdout=_NETSTAT_NO_VPN)
+        if cmd[0] == "ifconfig":
+            return _result(stdout=_IFCONFIG_NO_VPN)
+        return _result()
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+    result = doctor.check_vpn_active()
+    assert result.status == doctor.STATUS_OK
+    assert "no active VPN" in result.detail
+
+
+def test_check_vpn_active_ok_when_tools_missing(monkeypatch) -> None:
+    def fake_run(cmd: list[str]) -> subprocess.CompletedProcess:
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+    result = doctor.check_vpn_active()
+    assert result.status == doctor.STATUS_OK
+
+
 def test_aggregate_status_error_wins() -> None:
     results = [
         doctor.CheckResult(name="A", status=doctor.STATUS_OK, detail=""),
