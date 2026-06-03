@@ -221,15 +221,16 @@ mitm-tracker device start --transport wireguard
 #   http://192.168.1.44:8888/
 ```
 
-On the **iPhone/iPad** (same Wi-Fi), open the setup page in Safari and follow it:
+On the **iPhone/iPad** (same Wi-Fi), open the setup page in Safari. It has two
+steps, with **Step 1** offering a tab per transport (WireGuard or Wi-Fi proxy):
 
-1. **Install the WireGuard app** (free, App Store) — or set the manual Wi-Fi proxy
-   for the `wifi-proxy` transport.
-2. **Add the tunnel** — scan the QR on the page (*Add a tunnel → Create from QR
-   code*) or download the `.conf`. Turn the tunnel **on** and allow the VPN.
-3. **Install the certificate** — tap *Download certificate profile*, then
-   Settings → General → VPN & Device Management → install the *mitm-tracker CA*.
-4. **⚠️ Enable FULL TRUST — the step everyone misses.** Settings → General →
+1. **Connect.** WireGuard tab: install the WireGuard app (free, App Store),
+   *Add a tunnel → Create from QR code*, scan the on-page QR (or download the
+   `.conf`), turn the tunnel **on** and allow the VPN. Wi-Fi proxy tab: set a
+   manual proxy with the Server/Port shown (tap *Copy*).
+2. **Trust the certificate.** Tap *Download certificate profile*, then Settings →
+   General → VPN & Device Management → install the *mitm-tracker CA*.
+3. **⚠️ Enable FULL TRUST — the step everyone misses.** Settings → General →
    About → **Certificate Trust Settings** → turn ON the toggle for *mitmproxy*.
    Without it **every HTTPS request fails the TLS handshake** and apps show
    connection errors — the proxy is working, the device just doesn't trust it yet.
