@@ -111,6 +111,7 @@ class SessionManager:
         state["help_pid"] = None
         state["help_port"] = None
         state["lan_ip"] = None
+        state["proxy_mode"] = None
         self.write_state(state)
         return state
 

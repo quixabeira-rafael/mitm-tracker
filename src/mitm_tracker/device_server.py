@@ -61,8 +61,8 @@ def _wireguard_tab(ctx: HelpPageContext) -> str:
 
 
 def _wifi_tab(ctx: HelpPageContext) -> str:
-    ip = html.escape(ctx.proxy_ip)
-    port = ctx.proxy_port
+    ip = html.escape(ctx.proxy_ip, quote=True)
+    port = int(ctx.proxy_port)
     wifi_link = _deeplink_button("Open Wi-Fi settings", "prefs:root=WIFI")
     return f"""
       <section class="tab-panel" data-panel="wifi">
