@@ -19,8 +19,6 @@ _STATUS_GLYPH = {
     doctor.STATUS_ERROR: "❌",
 }
 
-_WARNINGS_REFRESH_TICKS = 15
-
 
 class Status(Enum):
     RUNNING = "running"
@@ -96,10 +94,8 @@ class TrayApp(rumps.App):
             self._quit_item,
         ]
         self._device_help_url: str | None = None
-        self._warnings_delegate = None
         self._warnings_snapshot: list[tuple[str, str]] = []
         self._warnings_rendered_key: tuple | None = None
-        self._warnings_tick = 0
         self._warnings_computing = False
 
         self._compute_warnings_snapshot()
@@ -111,31 +107,13 @@ class TrayApp(rumps.App):
 
     def run(self, **options) -> None:
         _set_accessory_activation_policy()
-        self._attach_warnings_delegate()
         super().run(**options)
 
-    def _attach_warnings_delegate(self) -> None:
-        nsmenu = getattr(self._warnings_item, "_menu", None)
-        if nsmenu is None:
-            return
-        try:
-            from Foundation import NSObject
-        except ImportError:
-            return
-
-        app = self
-
-        class _WarningsDelegate(NSObject):
-            def menuWillOpen_(self, _menu) -> None:
-                app._render_warnings()
-
-        self._warnings_delegate = _WarningsDelegate.alloc().init()
-        nsmenu.setDelegate_(self._warnings_delegate)
-
-    def _schedule_warnings_recompute(self) -> None:
+    def _on_refresh_warnings(self, _sender) -> None:
         if self._warnings_computing:
             return
         self._warnings_computing = True
+        self._warnings_item.title = "Warnings (refreshing…)"
         thread = threading.Thread(target=self._recompute_warnings_worker, daemon=True)
         thread.start()
 
@@ -148,7 +126,7 @@ class TrayApp(rumps.App):
 
     def _apply_warnings_snapshot(self, title: str, snapshot: list[tuple[str, str]]) -> None:
         def _on_main() -> None:
-            self._warnings_item.title = title
+            self._warnings_title = title
             self._warnings_snapshot = snapshot
             self._render_warnings()
 
@@ -161,16 +139,20 @@ class TrayApp(rumps.App):
 
     def _compute_warnings_snapshot(self) -> None:
         title, snapshot = _build_warnings_snapshot()
-        self._warnings_item.title = title
+        self._warnings_title = title
         self._warnings_snapshot = snapshot
 
     def _render_warnings(self) -> None:
+        self._warnings_item.title = self._warnings_title
         key = tuple(self._warnings_snapshot)
         if key == self._warnings_rendered_key:
             return
         self._warnings_rendered_key = key
         if len(self._warnings_item) > 0:
             self._warnings_item.clear()
+        refresh = rumps.MenuItem("Refresh warnings", callback=self._on_refresh_warnings)
+        self._warnings_item.add(refresh)
+        self._warnings_item.add(rumps.separator)
         for title, detail in self._warnings_snapshot:
             head = rumps.MenuItem(title)
             head.set_callback(None)
@@ -202,11 +184,6 @@ class TrayApp(rumps.App):
         self._open_page_item.set_callback(
             self._on_open_device_page if device_active else None
         )
-
-        self._warnings_tick += 1
-        if self._warnings_tick >= _WARNINGS_REFRESH_TICKS:
-            self._warnings_tick = 0
-            self._schedule_warnings_recompute()
 
     def _on_start(self, _sender) -> None:
         self._invoke_cli(["record", "start", "--json"])
