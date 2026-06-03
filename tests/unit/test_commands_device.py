@@ -59,3 +59,47 @@ def test_start_fails_without_lan_ip(tmp_repo: Path, monkeypatch, capsys):
     assert rc == EXIT_INVALID_STATE
     err = capsys.readouterr().err
     assert "no_lan_ip" in err
+
+
+def test_start_wireguard_generates_keyfile_and_uses_wireguard_mode(
+    tmp_repo: Path, monkeypatch, capsys
+):
+    from mitm_tracker.commands import record as record_module
+
+    ca = tmp_repo / "ca.pem"
+    ca.write_text("x", encoding="ascii")
+    monkeypatch.setattr(device_module.cert_manager, "ensure_ca_exists", lambda *a, **k: ca)
+    monkeypatch.setattr(
+        net_info,
+        "lan_address",
+        lambda **kw: net_info.LanAddress(service="Wi-Fi", ip="192.168.1.44", source="networksetup"),
+    )
+
+    captured = {}
+
+    def fake_launch(**kwargs):
+        captured.update(kwargs)
+        return record_module.ProxyLaunchResult(
+            pid=4242,
+            mode="all",
+            port=kwargs["port"],
+            listen_host=kwargs["listen_host"],
+            profile="default",
+            session_db=workspace_for().captures_dir / "s.db",
+            ssl_count=3,
+            proxy_service=None,
+            no_cache=True,
+            proxy_mode=kwargs["proxy_mode"],
+        )
+
+    monkeypatch.setattr(record_module, "launch_proxy", fake_launch)
+    monkeypatch.setattr(device_module, "_spawn_help_server", lambda **kw: 4243)
+
+    rc = main(["device", "start", "--transport", "wireguard", "--json"])
+    assert rc == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["transport"] == "wireguard"
+    assert captured["proxy_mode"] == "wireguard"
+    assert captured["wireguard_keyfile"] is not None
+    # keyfile was generated in the workspace runtime dir
+    assert workspace_for().wireguard_keyfile.exists()

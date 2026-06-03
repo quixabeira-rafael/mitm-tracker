@@ -53,22 +53,25 @@ The simulator inherits the macOS system proxy automatically — no manual proxy 
 
 ## Workflow A2 — capture from a physical iOS device
 
-For a real iPhone/iPad (not the simulator), use `device start` instead of `record start`:
+For a real iPhone/iPad (not the simulator), use `device start` instead of `record start`. There are two transports:
+
+- **`--transport wireguard` (recommended)** — captures **every app**, including native apps and QUIC/HTTP3. The Mac runs a WireGuard server; the device connects with the WireGuard app and all its traffic is routed through mitm-tracker. This is the only way to capture apps that ignore the Wi-Fi proxy (most native apps do — same approach Charles/Proxyman iOS use).
+- **`--transport wifi-proxy` (default)** — Safari and proxy-aware apps only. Simpler (no extra app), but native apps using their own networking or QUIC won't appear.
 
 ```bash
 cd /path/to/project-root
-mitm-tracker ssl add "*.api.example.com"   # same SSL-list rules as record
-mitm-tracker device start                  # binds proxy to the LAN (0.0.0.0), serves a setup page
-#   Proxy:    192.168.1.44:8080
-#   Help page: http://192.168.1.44:8888/
+mitm-tracker ssl add "*.api.example.com"             # same SSL-list rules as record
+mitm-tracker device start --transport wireguard      # WireGuard server + setup page (with QR)
+#   Open the setup page on the device and scan the QR with the WireGuard app:
+#   http://192.168.1.44:8888/
 ```
 
-`device start` differs from `record start` in two ways: it binds the proxy to the LAN so the phone can reach it, and it **does not change this Mac's system proxy** (no sudo/networksetup prompt — the phone is the client). Both the proxy and the help page are daemonized and tied together: `device start` returns immediately, and `device stop` (or `record stop`, or the tray Stop button) tears down **both** at once. The help server PID, port, and LAN IP are persisted in `state.json` (`help_pid`/`help_port`/`lan_ip`).
+`device start` differs from `record start`: it binds to the LAN so the phone can reach it, and it **does not change this Mac's system proxy** (no sudo/networksetup prompt — the phone is the client). Proxy and help page are daemonized and tied together: `device start` returns immediately, and `device stop` (or `record stop`, or the tray Stop button) tears down **both**. State persists `help_pid`/`help_port`/`lan_ip`/`proxy_mode` in `state.json`. The WireGuard key material lives in `runtime/wireguard.conf` (reused across runs).
 
-The on-device steps **cannot be automated** and the user must do them by hand:
-1. Settings → Wi-Fi → (network) → Configure Proxy → Manual → enter the printed IP/port.
-2. Open the help page (or `http://mitm.it`) in Safari → download the profile → Settings → General → VPN & Device Management → install the *mitm-tracker CA*.
-3. Settings → General → About → Certificate Trust Settings → enable full trust. **Required** — iOS never auto-trusts a manually installed root for SSL.
+The on-device steps **cannot be automated**; the user does them by hand from the setup page:
+1. WireGuard: install the WireGuard app, scan the QR (*Add a tunnel → from QR code*), turn the tunnel ON, allow the VPN. (Or for wifi-proxy: Settings → Wi-Fi → Configure Proxy → Manual → the printed IP/port.)
+2. Download the profile from the page → Settings → General → VPN & Device Management → install the *mitm-tracker CA*.
+3. **Settings → General → About → Certificate Trust Settings → enable FULL TRUST for mitmproxy.** This is the #1 cause of "app shows connection error / nothing decrypts": the profile is installed but full trust is OFF, so every TLS handshake fails. iOS never auto-trusts a manually installed root for SSL.
 
 The help page also renders best-effort `prefs:root=…` Settings deeplinks, but Apple blocks those from Safari on iOS 17+, so treat the written steps as authoritative. Use `mitm-tracker doctor` to confirm the LAN address, that the proxy is LAN-bound, and that the macOS firewall is not blocking the incoming connection.
 
@@ -153,7 +156,7 @@ Other actions:
 | `cert {install,status,simulators}` | Install mitmproxy CA into booted simulator(s) | iOS 26 uses `TrustStore.sqlite3` (sha256); legacy keychain (sha1) still supported |
 | `cert host {install,uninstall,status}` | Trust the mitmproxy CA system-wide on the Mac (DANGEROUS) | Run `--yes` to skip the confirmation banner, `--force` to re-run when previous attempt left trust missing. Always reverse with `cert host uninstall` |
 | `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080 |
-| `device {start,status,stop}` | Proxy a physical iOS device over the LAN + serve its cert/setup page | Binds proxy to `0.0.0.0`, leaves the Mac's own proxy untouched. Daemonizes both the proxy and the setup page and returns; `device stop`/`record stop`/tray stop both together. `--help-port N` overrides 8888. Shares the same session/state as `record` |
+| `device {start,status,stop}` | Physical iOS device: route over the LAN + serve cert/setup page | `--transport wireguard` (every app, incl. QUIC; device needs the WireGuard app) or `wifi-proxy` (Safari/proxy-aware only). Binds to `0.0.0.0`, leaves the Mac's own proxy untouched. Daemonizes proxy + setup page; `device stop`/`record stop`/tray stop both. `--help-port N` (8888), `--wireguard-port N` (51820). Same session/state as `record` |
 | `query {recent,failures,slow,hosts,show,sql,curl,sessions,use}` | Inspect captured flows | `--json` on every subcommand; `query use <session>` switches active DB |
 | `release [--older-than 24h] [--dry-run]` | Delete stale capture databases | `--no-keep-active` to allow deleting the active one |
 | `tray {run,install,uninstall,status}` | macOS menu bar indicator (🟢/🔴/🟡); requires `[tray]` extra | `tray install` registers a LaunchAgent for auto-launch on login; `tray run` is foreground only |
@@ -192,6 +195,8 @@ Run `mitm-tracker doctor` first. It tells you exactly what's missing and gives t
 - **Mac browser HTTPS still broken even with mitmproxy CA "installed"** → `cert install` only trusts the CA inside iOS Simulators. For Safari / Chrome / native apps to trust it, run `mitm-tracker cert host install` separately (system-wide trust, dangerous, reverse with `cert host uninstall`).
 - **Physical iPhone can't reach the proxy** → with `device start`, check `mitm-tracker doctor`: the proxy must be LAN-bound (`0.0.0.0`, not loopback), the phone must be on the **same Wi-Fi**, and the macOS firewall must not be blocking incoming connections (allow `python`/`mitmdump`). The phone needs the IP printed by `device start`, not `127.0.0.1`.
 - **Physical iPhone HTTPS fails after installing the profile** → installing the `.mobileconfig` is not enough on iOS. The user must also enable Settings → General → About → Certificate Trust Settings → full trust for the mitmproxy cert. iOS never auto-trusts a manually installed root for SSL.
+- **Physical device: app shows "connection error" / nothing decrypts under WireGuard, but the WireGuard tunnel shows a handshake and data transfer** → the cert's FULL TRUST toggle is OFF. The log shows `Client TLS handshake failed ... does not trust the proxy's certificate` for *every* host (incl. third parties), 0 successes. Fix: Settings → General → About → Certificate Trust Settings → toggle ON mitmproxy. (If only the app's own hosts fail but third-party hosts decrypt, that's real certificate pinning — can't bypass without patching the app.)
+- **Physical app traffic never reaches the proxy at all (Wi-Fi proxy mode)** → the app ignores the Wi-Fi proxy (native networking / QUIC). Switch to `device start --transport wireguard`, which routes all traffic regardless.
 - **`device start` deeplink buttons do nothing on the phone** → expected on iOS 17+; Apple blocks `prefs:root=…` Settings links from Safari. Tell the user to follow the written steps on the page instead.
 
 ## Profile-scoped configuration

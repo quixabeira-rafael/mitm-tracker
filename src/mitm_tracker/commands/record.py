@@ -94,6 +94,7 @@ class ProxyLaunchResult:
     ssl_count: int
     proxy_service: str | None
     no_cache: bool
+    proxy_mode: str = "regular"
 
 
 def launch_proxy(
@@ -103,6 +104,8 @@ def launch_proxy(
     listen_host: str,
     keep_cache: bool,
     configure_system_proxy: bool,
+    proxy_mode: str = "regular",
+    wireguard_keyfile: Path | None = None,
     spawn: SpawnFn | None = None,
 ) -> ProxyLaunchResult:
     workspace = workspace_for()
@@ -163,6 +166,8 @@ def launch_proxy(
         allow_regex=allow_regex,
         maplocal_dir=maplocal_dir,
         no_cache=no_cache,
+        proxy_mode=proxy_mode,
+        wireguard_keyfile=wireguard_keyfile,
     )
     log_handle = workspace.log_path.open("ab", buffering=0)
     log_handle.write(
@@ -195,6 +200,7 @@ def launch_proxy(
         session_db=db_path,
         proxy_service=proxy_service,
         listen_host=listen_host,
+        proxy_mode=proxy_mode,
     )
     log_handle.close()
 
@@ -208,6 +214,7 @@ def launch_proxy(
         ssl_count=ssl_count,
         proxy_service=proxy_service,
         no_cache=no_cache,
+        proxy_mode=proxy_mode,
     )
 
 
@@ -427,23 +434,31 @@ def _build_mitmdump_command(
     allow_regex: str,
     maplocal_dir: Path | None = None,
     no_cache: bool = True,
+    proxy_mode: str = "regular",
+    wireguard_keyfile: Path | None = None,
 ) -> list[str]:
     addon_path = _addon_module_path()
-    cmd = [
-        mitmdump_bin,
-        "-s",
-        addon_path,
-        "--listen-host",
-        listen_host,
-        "--listen-port",
-        str(listen_port),
-        "--set",
-        f"tracker_db_path={db_path}",
-        "--set",
-        f"tracker_mode={mode}",
-        "--set",
-        f"tracker_no_cache={'true' if no_cache else 'false'}",
-    ]
+    cmd = [mitmdump_bin, "-s", addon_path]
+    if proxy_mode == "wireguard":
+        if wireguard_keyfile is None:
+            raise ProxyLaunchError(
+                "wireguard_keyfile_missing",
+                "WireGuard mode requires a key file path",
+                exit_code=EXIT_SYSTEM,
+            )
+        cmd.extend(["--mode", f"wireguard:{wireguard_keyfile}", "--listen-port", str(listen_port)])
+    else:
+        cmd.extend(["--listen-host", listen_host, "--listen-port", str(listen_port)])
+    cmd.extend(
+        [
+            "--set",
+            f"tracker_db_path={db_path}",
+            "--set",
+            f"tracker_mode={mode}",
+            "--set",
+            f"tracker_no_cache={'true' if no_cache else 'false'}",
+        ]
+    )
     if maplocal_dir is not None:
         cmd.extend(["--set", f"tracker_maplocal_dir={maplocal_dir}"])
     cmd.extend(["--allow-hosts", allow_regex])
