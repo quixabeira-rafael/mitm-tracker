@@ -93,3 +93,69 @@ def test_server_404_for_unknown(running_server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         _get(running_server, "/nope")
     assert exc.value.code == 404
+
+
+_SAMPLE_WG_CONF = (
+    "[Interface]\nPrivateKey = EqlHpkKEjf51H2nS07vCHHB745sKChzhbDjYUB2MZxk=\n"
+    "Address = 10.0.0.1/32\nDNS = 10.0.0.53\n\n[Peer]\n"
+    "PublicKey = ivpxOgQJtzt9gekasQ7ZHh6UrVhPadzjoLJfF+91/ws=\n"
+    "AllowedIPs = 0.0.0.0/0\nEndpoint = 192.168.0.10:51820\n"
+)
+
+
+def _wg_ctx() -> HelpPageContext:
+    return HelpPageContext(
+        proxy_ip="192.168.0.10",
+        proxy_port=51820,
+        help_ip="192.168.0.10",
+        help_port=8888,
+        mode="wireguard",
+        wireguard_conf=_SAMPLE_WG_CONF,
+    )
+
+
+def test_render_wireguard_mode_has_both_tabs_and_qr():
+    page = render_help_page(_wg_ctx())
+    assert 'data-tab="wireguard"' in page
+    assert 'data-tab="wifi"' in page
+    assert "<svg" in page  # QR rendered
+    assert "apps.apple.com" in page  # App Store link
+    assert "FULL TRUST" in page
+
+
+def test_render_wifi_only_mode_has_no_wireguard_tab():
+    page = render_help_page(_ctx())
+    assert 'data-tab="wireguard"' not in page
+    assert 'data-tab="wifi"' in page
+    assert "<svg" not in page
+
+
+@pytest.fixture
+def wireguard_server(tmp_path: Path):
+    pem = tmp_path / "ca.pem"
+    pem.write_text(_SAMPLE_PEM, encoding="ascii")
+    server = DeviceHelpServer(
+        host="127.0.0.1",
+        port=0,
+        ca_pem_path=pem,
+        help_context=_wg_ctx(),
+    )
+    server.start_background()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+
+
+def test_server_serves_wireguard_conf(wireguard_server):
+    status, headers, body = _get(wireguard_server, "/mitm-tracker.conf")
+    assert status == 200
+    assert "attachment" in headers["Content-Disposition"]
+    assert b"[Interface]" in body
+    assert b"[Peer]" in body
+
+
+def test_server_wireguard_conf_404_in_wifi_mode(running_server):
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(running_server, "/mitm-tracker.conf")
+    assert exc.value.code == 404

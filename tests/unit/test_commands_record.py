@@ -273,3 +273,88 @@ def test_logs_tails_existing_file(patched_environment, capsys, tmp_repo: Path) -
     assert "line3" in out
     assert "line4" in out
     assert "line1" not in out
+
+
+def test_build_mitmdump_command_wireguard_mode(tmp_path: Path) -> None:
+    keyfile = tmp_path / "wireguard.conf"
+    cmd = record_module._build_mitmdump_command(
+        mitmdump_bin="/usr/bin/mitmdump",
+        listen_host="0.0.0.0",
+        listen_port=51820,
+        db_path=tmp_path / "s.db",
+        mode="all",
+        allow_regex="^$",
+        proxy_mode="wireguard",
+        wireguard_keyfile=keyfile,
+    )
+    assert "--mode" in cmd
+    assert f"wireguard:{keyfile}" in cmd
+    # WireGuard mode must NOT pass --listen-host
+    assert "--listen-host" not in cmd
+    assert "--listen-port" in cmd and "51820" in cmd
+
+
+def test_build_mitmdump_command_regular_mode_uses_listen_host(tmp_path: Path) -> None:
+    cmd = record_module._build_mitmdump_command(
+        mitmdump_bin="/usr/bin/mitmdump",
+        listen_host="127.0.0.1",
+        listen_port=8080,
+        db_path=tmp_path / "s.db",
+        mode="all",
+        allow_regex="^$",
+    )
+    assert "--listen-host" in cmd
+    assert "--mode" not in cmd
+
+
+def test_build_mitmdump_command_wireguard_requires_keyfile(tmp_path: Path) -> None:
+    with pytest.raises(record_module.ProxyLaunchError) as exc:
+        record_module._build_mitmdump_command(
+            mitmdump_bin="/usr/bin/mitmdump",
+            listen_host="0.0.0.0",
+            listen_port=51820,
+            db_path=tmp_path / "s.db",
+            mode="all",
+            allow_regex="^$",
+            proxy_mode="wireguard",
+            wireguard_keyfile=None,
+        )
+    assert exc.value.error == "wireguard_keyfile_missing"
+
+
+def test_stop_terminates_both_proxy_and_help_pids(tmp_repo: Path, monkeypatch, capsys) -> None:
+    from mitm_tracker.session_manager import SessionManager
+
+    workspace = workspace_for(tmp_repo)
+    workspace.ensure()
+    sm = SessionManager(workspace)
+    sm.start(
+        pid=1111,
+        mode="all",
+        port=51820,
+        session_db=workspace.captures_dir / "s.db",
+        proxy_service=None,
+        listen_host="0.0.0.0",
+        proxy_mode="wireguard",
+    )
+    sm.set_device_help(help_pid=2222, help_port=8888, lan_ip="192.168.1.44")
+
+    killed: list[int] = []
+    # Alive until the signal lands, then dead — so _terminate_pid signals once
+    # and its wait loop exits immediately (no 5s SIGKILL fallback delay).
+    monkeypatch.setattr(
+        session_module,
+        "_default_pid_alive",
+        lambda pid: pid in (1111, 2222) and pid not in killed,
+    )
+
+    import argparse
+
+    rc = record_module.cmd_stop(
+        argparse.Namespace(json_mode=True), kill=lambda pid, sig: killed.append(pid)
+    )
+    capsys.readouterr()
+    assert rc == EXIT_OK
+    # Both the proxy pid and the help-server pid must receive a signal.
+    assert 1111 in killed
+    assert 2222 in killed

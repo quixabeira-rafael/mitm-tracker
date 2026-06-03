@@ -198,6 +198,7 @@ Run `mitm-tracker doctor` first. It tells you exactly what's missing and gives t
 - **Physical device: app shows "connection error" / nothing decrypts under WireGuard, but the WireGuard tunnel shows a handshake and data transfer** → the cert's FULL TRUST toggle is OFF. The log shows `Client TLS handshake failed ... does not trust the proxy's certificate` for *every* host (incl. third parties), 0 successes. Fix: Settings → General → About → Certificate Trust Settings → toggle ON mitmproxy. (If only the app's own hosts fail but third-party hosts decrypt, that's real certificate pinning — can't bypass without patching the app.)
 - **Physical app traffic never reaches the proxy at all (Wi-Fi proxy mode)** → the app ignores the Wi-Fi proxy (native networking / QUIC). Switch to `device start --transport wireguard`, which routes all traffic regardless.
 - **`device start` deeplink buttons do nothing on the phone** → expected on iOS 17+; Apple blocks `prefs:root=…` Settings links from Safari. Tell the user to follow the written steps on the page instead.
+- **Trust model**: while a device session runs, the setup page hands out the CA and (in WireGuard mode) a private-key `.conf` over plain HTTP on the LAN — anyone on that network can grab them. Only use on a trusted network and stop the session when done. Key material is stored `0600` under `runtime/`. This is intentional (same trade-off as Charles/Proxyman), not a bug to "fix".
 
 ## Profile-scoped configuration
 

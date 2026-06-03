@@ -246,6 +246,13 @@ If the tray indicator is running, a LAN/device session shows its reachable
 address in the status line and adds **Copy device setup link** and **Open device
 setup page** menu items.
 
+**Trust model / security.** While a device session is up, the setup page serves
+the mitmproxy CA and (in WireGuard mode) a WireGuard config containing a private
+key over plain HTTP on your LAN — anyone on the same network could fetch them and
+intercept your device's traffic. This is the same trade-off Charles/Proxyman
+make; only run device sessions on a network you trust, and stop the session when
+done. The WireGuard key material is stored `0600` under `.mitm-tracker/runtime/`.
+
 > The setup page also shows best-effort “Open Settings” shortcuts. Apple
 > restricts Settings deeplinks from Safari, so on iOS 17+ they may do nothing —
 > use the written steps in that case.

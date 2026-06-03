@@ -103,3 +103,47 @@ def test_start_wireguard_generates_keyfile_and_uses_wireguard_mode(
     assert captured["wireguard_keyfile"] is not None
     # keyfile was generated in the workspace runtime dir
     assert workspace_for().wireguard_keyfile.exists()
+
+
+def test_status_reports_wireguard_transport(tmp_repo: Path, monkeypatch, capsys):
+    ws = workspace_for()
+    ws.ensure()
+    sm = SessionManager(ws)
+    sm.start(
+        pid=1234,
+        mode="all",
+        port=51820,
+        session_db=ws.captures_dir / "s.db",
+        proxy_service=None,
+        listen_host="0.0.0.0",
+        proxy_mode="wireguard",
+    )
+    sm.set_device_help(help_pid=1235, help_port=8888, lan_ip="192.168.1.44")
+    monkeypatch.setattr(SessionManager, "is_running", lambda self: True)
+
+    rc = main(["device", "status", "--json"])
+    assert rc == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["transport"] == "wireguard"
+    assert payload["help_url"] == "http://192.168.1.44:8888/"
+
+
+def test_status_reports_wifi_proxy_transport(tmp_repo: Path, monkeypatch, capsys):
+    ws = workspace_for()
+    ws.ensure()
+    sm = SessionManager(ws)
+    sm.start(
+        pid=1234,
+        mode="all",
+        port=8080,
+        session_db=ws.captures_dir / "s.db",
+        proxy_service=None,
+        listen_host="0.0.0.0",
+        proxy_mode="regular",
+    )
+    monkeypatch.setattr(SessionManager, "is_running", lambda self: True)
+
+    rc = main(["device", "status", "--json"])
+    assert rc == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["transport"] == "wifi-proxy"

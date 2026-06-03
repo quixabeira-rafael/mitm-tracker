@@ -129,3 +129,32 @@ def test_read_pid_returns_none_when_unparseable(tmp_path: Path) -> None:
     sm = _make_manager(tmp_path)
     sm.workspace.pid_path.write_text("not a number")
     assert sm.read_pid() is None
+
+
+def test_start_persists_proxy_mode_and_stop_clears_it(tmp_path):
+    from mitm_tracker.config import Workspace
+    from mitm_tracker.session_manager import SessionManager
+    ws = Workspace(root=tmp_path); ws.ensure()
+    sm = SessionManager(ws, pid_alive=lambda pid: True)
+    sm.start(pid=1, mode="all", port=51820, session_db=tmp_path/"s.db",
+             proxy_service=None, listen_host="0.0.0.0", proxy_mode="wireguard")
+    assert sm.read_state()["proxy_mode"] == "wireguard"
+    sm.stop()
+    state = sm.read_state()
+    assert state["proxy_mode"] is None
+    assert state["help_pid"] is None
+    assert state["lan_ip"] is None
+
+
+def test_set_device_help_persists_fields(tmp_path):
+    from mitm_tracker.config import Workspace
+    from mitm_tracker.session_manager import SessionManager
+    ws = Workspace(root=tmp_path); ws.ensure()
+    sm = SessionManager(ws, pid_alive=lambda pid: True)
+    sm.start(pid=1, mode="all", port=51820, session_db=tmp_path/"s.db",
+             proxy_service=None, listen_host="0.0.0.0", proxy_mode="wireguard")
+    sm.set_device_help(help_pid=2222, help_port=8888, lan_ip="192.168.1.44")
+    state = sm.read_state()
+    assert state["help_pid"] == 2222
+    assert state["help_port"] == 8888
+    assert state["lan_ip"] == "192.168.1.44"

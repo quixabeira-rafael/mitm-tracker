@@ -77,3 +77,25 @@ def test_qr_svg_renders(tmp_path: Path):
     conf = wg.client_config(kf, endpoint_host="192.168.1.44", endpoint_port=51820).to_conf()
     svg = wg.qr_svg(conf)
     assert "<svg" in svg
+
+
+def test_qr_svg_rejects_empty():
+    with pytest.raises(WireGuardError):
+        wg.qr_svg("")
+    with pytest.raises(WireGuardError):
+        wg.qr_svg(None)
+
+
+def test_ensure_keyfile_is_owner_only(tmp_path: Path):
+    import stat
+    kf = tmp_path / "wireguard.conf"
+    wg.ensure_keyfile(kf)
+    mode = stat.S_IMODE(kf.stat().st_mode)
+    assert mode == 0o600
+
+
+def test_write_client_conf_is_owner_only(tmp_path: Path):
+    import stat
+    p = wg.write_client_conf(tmp_path / "client.conf", "[Interface]\n")
+    mode = stat.S_IMODE(p.stat().st_mode)
+    assert mode == 0o600

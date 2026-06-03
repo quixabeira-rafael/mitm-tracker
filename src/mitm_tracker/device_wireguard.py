@@ -41,6 +41,7 @@ class WireGuardConfig:
 def ensure_keyfile(path: Path) -> Path:
     path = Path(path)
     if path.exists():
+        _restrict_permissions(path)
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     server_key = _generate_private_key()
@@ -49,7 +50,23 @@ def ensure_keyfile(path: Path) -> Path:
         json.dumps({"server_key": server_key, "client_key": client_key}, indent=4),
         encoding="utf-8",
     )
+    _restrict_permissions(path)
     return path
+
+
+def write_client_conf(path: Path, conf_text: str) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(conf_text, encoding="utf-8")
+    _restrict_permissions(path)
+    return path
+
+
+def _restrict_permissions(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def client_config(keyfile: Path, *, endpoint_host: str, endpoint_port: int) -> WireGuardConfig:
@@ -67,6 +84,8 @@ def client_config(keyfile: Path, *, endpoint_host: str, endpoint_port: int) -> W
 
 
 def qr_svg(conf_text: str) -> str:
+    if not conf_text:
+        raise WireGuardError("cannot render a QR for an empty WireGuard config")
     import segno
 
     qr = segno.make(conf_text, error="l")

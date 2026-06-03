@@ -419,3 +419,106 @@ def test_run_all_checks_returns_list() -> None:
     assert isinstance(results, list)
     assert len(results) > 0
     assert all(isinstance(r, doctor.CheckResult) for r in results)
+
+
+def test_check_firewall_ok_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        doctor.Path, "exists", lambda self: True
+    )
+    monkeypatch.setattr(
+        doctor, "_run", lambda cmd: _result(stdout="Firewall is disabled. (State = 0)\n")
+    )
+    result = doctor.check_firewall()
+    assert result.status == doctor.STATUS_OK
+
+
+def test_check_firewall_warns_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(doctor.Path, "exists", lambda self: True)
+    monkeypatch.setattr(
+        doctor, "_run", lambda cmd: _result(stdout="Firewall is enabled. (State = 1)\n")
+    )
+    result = doctor.check_firewall()
+    assert result.status == doctor.STATUS_WARN
+    assert result.fix
+
+
+def test_check_firewall_info_when_tool_missing(monkeypatch) -> None:
+    monkeypatch.setattr(doctor.Path, "exists", lambda self: False)
+    result = doctor.check_firewall()
+    assert result.status == doctor.STATUS_INFO
+
+
+def test_check_lan_reachable_reports_ip(monkeypatch) -> None:
+    from mitm_tracker import net_info
+
+    monkeypatch.setattr(
+        net_info,
+        "lan_address",
+        lambda **kw: net_info.LanAddress(service="Wi-Fi", ip="192.168.1.44", source="networksetup"),
+    )
+    result = doctor.check_lan_reachable()
+    assert result.status == doctor.STATUS_INFO
+    assert "192.168.1.44" in result.detail
+
+
+def test_check_lan_reachable_warns_without_ip(monkeypatch) -> None:
+    from mitm_tracker import net_info
+
+    monkeypatch.setattr(
+        net_info,
+        "lan_address",
+        lambda **kw: net_info.LanAddress(service=None, ip=None, source="none"),
+    )
+    result = doctor.check_lan_reachable()
+    assert result.status == doctor.STATUS_WARN
+    assert result.fix
+
+
+def test_check_lan_proxy_ok_when_lan_bound(tmp_repo, monkeypatch) -> None:
+    from mitm_tracker.config import workspace_for
+    from mitm_tracker.session_manager import SessionManager
+
+    ws = workspace_for()
+    ws.ensure()
+    sm = SessionManager(ws)
+    sm.start(
+        pid=1234,
+        mode="all",
+        port=51820,
+        session_db=ws.captures_dir / "s.db",
+        proxy_service=None,
+        listen_host="0.0.0.0",
+        proxy_mode="wireguard",
+    )
+    monkeypatch.setattr(SessionManager, "is_running", lambda self: True)
+    result = doctor.check_lan_proxy()
+    assert result.status == doctor.STATUS_OK
+    assert "0.0.0.0" in result.detail
+
+
+def test_check_lan_proxy_info_when_loopback(tmp_repo, monkeypatch) -> None:
+    from mitm_tracker.config import workspace_for
+    from mitm_tracker.session_manager import SessionManager
+
+    ws = workspace_for()
+    ws.ensure()
+    sm = SessionManager(ws)
+    sm.start(
+        pid=1234,
+        mode="all",
+        port=8080,
+        session_db=ws.captures_dir / "s.db",
+        proxy_service=None,
+        listen_host="127.0.0.1",
+    )
+    monkeypatch.setattr(SessionManager, "is_running", lambda self: True)
+    result = doctor.check_lan_proxy()
+    assert result.status == doctor.STATUS_INFO
+
+
+def test_check_lan_proxy_info_when_not_running(tmp_repo) -> None:
+    from mitm_tracker.config import workspace_for
+
+    workspace_for().ensure()
+    result = doctor.check_lan_proxy()
+    assert result.status == doctor.STATUS_INFO

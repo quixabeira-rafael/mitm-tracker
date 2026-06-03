@@ -97,6 +97,8 @@ class TrayApp(rumps.App):
         self._warnings_snapshot: list[tuple[str, str]] = []
         self._warnings_rendered_key: tuple | None = None
         self._warnings_computing = False
+        self._warnings_lock = threading.Lock()
+        self._warnings_dirty = False
 
         self._compute_warnings_snapshot()
         self._render_warnings()
@@ -110,9 +112,10 @@ class TrayApp(rumps.App):
         super().run(**options)
 
     def _on_refresh_warnings(self, _sender) -> None:
-        if self._warnings_computing:
-            return
-        self._warnings_computing = True
+        with self._warnings_lock:
+            if self._warnings_computing:
+                return
+            self._warnings_computing = True
         self._warnings_item.title = "Warnings (refreshing…)"
         thread = threading.Thread(target=self._recompute_warnings_worker, daemon=True)
         thread.start()
@@ -121,7 +124,8 @@ class TrayApp(rumps.App):
         try:
             title, snapshot = _build_warnings_snapshot()
         finally:
-            self._warnings_computing = False
+            with self._warnings_lock:
+                self._warnings_computing = False
         self._apply_warnings_snapshot(title, snapshot)
 
     def _apply_warnings_snapshot(self, title: str, snapshot: list[tuple[str, str]]) -> None:
@@ -133,7 +137,12 @@ class TrayApp(rumps.App):
         try:
             from PyObjCTools import AppHelper
         except ImportError:
-            _on_main()
+            # No way to hop to the main thread; stash the result and let the
+            # next timer tick (which runs on the run loop) render it. Never
+            # mutate the NSMenu from this worker thread.
+            self._warnings_title = title
+            self._warnings_snapshot = snapshot
+            self._warnings_dirty = True
             return
         AppHelper.callAfter(_on_main)
 
@@ -184,6 +193,10 @@ class TrayApp(rumps.App):
         self._open_page_item.set_callback(
             self._on_open_device_page if device_active else None
         )
+
+        if self._warnings_dirty:
+            self._warnings_dirty = False
+            self._render_warnings()
 
     def _on_start(self, _sender) -> None:
         self._invoke_cli(["record", "start", "--json"])

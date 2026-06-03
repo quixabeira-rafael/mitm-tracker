@@ -207,8 +207,9 @@ def cmd_start(args: argparse.Namespace) -> int:
             keyfile, endpoint_host=address.ip, endpoint_port=proxy_port
         )
         wg_conf_text = wg_cfg.to_conf()
-        wg_conf_path = workspace.runtime_dir / "wireguard-client.conf"
-        wg_conf_path.write_text(wg_conf_text, encoding="utf-8")
+        wg_conf_path = device_wireguard.write_client_conf(
+            workspace.runtime_dir / "wireguard-client.conf", wg_conf_text
+        )
 
     try:
         result = record_commands.launch_proxy(
