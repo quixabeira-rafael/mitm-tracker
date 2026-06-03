@@ -68,8 +68,8 @@ mitm-tracker device start --transport wireguard      # WireGuard server + setup 
 
 `device start` differs from `record start`: it binds to the LAN so the phone can reach it, and it **does not change this Mac's system proxy** (no sudo/networksetup prompt — the phone is the client). Proxy and help page are daemonized and tied together: `device start` returns immediately, and `device stop` (or `record stop`, or the tray Stop button) tears down **both**. State persists `help_pid`/`help_port`/`lan_ip`/`proxy_mode` in `state.json`. The WireGuard key material lives in `runtime/wireguard.conf` (reused across runs).
 
-The on-device steps **cannot be automated**; the user does them by hand from the setup page:
-1. WireGuard: install the WireGuard app, scan the QR (*Add a tunnel → from QR code*), turn the tunnel ON, allow the VPN. (Or for wifi-proxy: Settings → Wi-Fi → Configure Proxy → Manual → the printed IP/port.)
+The on-device steps **cannot be automated**; the user does them by hand from the setup page (which is laid out as Step 1 — Connect, with a tab per transport, and Step 2 — Trust the certificate):
+1. WireGuard: install the WireGuard app, scan the QR (*Add a tunnel → from QR code*), turn the tunnel ON, allow the VPN. (Or for wifi-proxy: Settings → Wi-Fi → Configure Proxy → Manual → the printed IP/port — tap Copy on the page for the values.)
 2. Download the profile from the page → Settings → General → VPN & Device Management → install the *mitm-tracker CA*.
 3. **Settings → General → About → Certificate Trust Settings → enable FULL TRUST for mitmproxy.** This is the #1 cause of "app shows connection error / nothing decrypts": the profile is installed but full trust is OFF, so every TLS handshake fails. iOS never auto-trusts a manually installed root for SSL.
 
@@ -135,7 +135,7 @@ mitm-tracker tray install                      # one-time: auto-launch on login 
 
 After `install`, the icon appears immediately and on every subsequent login. Icon: 🟢 running, 🔴 stopped, 🟡 zombie (PID dead but state says running). Menu shows active profile + SSL host count, workspace path, and Start/Stop record actions. Useful for spotting the zombie-state failure mode without polling `record status` manually.
 
-When the running session is a physical-device session (`device start`), the status line shows the reachable LAN address (e.g. `Running (device LAN 192.168.1.44:8080)`) and two extra menu items appear: **Copy device setup link** (copies `http://<ip>:<help-port>/` via `pbcopy`) and **Open device setup page** (opens it in the Mac browser). They are disabled for ordinary loopback `record` sessions.
+When the running session is a physical-device session (`device start`), the status line shows the reachable LAN address (e.g. `Running (device LAN 192.168.1.44:<port>)` — 8080 for wifi-proxy, 51820 for wireguard) and two extra menu items appear: **Copy device setup link** (copies `http://<ip>:<help-port>/` via `pbcopy`) and **Open device setup page** (opens it in the Mac browser). They are disabled for ordinary loopback `record` sessions.
 
 Click "Quit tray" to exit cleanly: if a record session is RUNNING or CRASHED, the tray runs `record stop` first (one Touch ID tap, restores system proxy, kills mitmdump) before tearing itself down. Plain "Stop record" stops the daemon but keeps the tray alive. The tray sets `NSApplicationActivationPolicyAccessory` at runtime so it doesn't appear in the Dock or Cmd-Tab.
 
