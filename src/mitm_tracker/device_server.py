@@ -33,59 +33,67 @@ def _deeplink_button(label: str, url: str) -> str:
     )
 
 
-def _wireguard_section(ctx: HelpPageContext) -> str:
-    if ctx.mode != "wireguard" or not ctx.wireguard_conf:
-        return ""
+def _wireguard_tab(ctx: HelpPageContext) -> str:
     qr = device_wireguard.qr_svg(ctx.wireguard_conf)
     store_url = html.escape(device_wireguard.WIREGUARD_APP_STORE_URL, quote=True)
     return f"""
-  <div class="wg">
-    <h2>Capture every app (WireGuard)</h2>
-    <p class="lead">This routes <strong>all</strong> traffic from this device through
-    mitm-tracker — including native apps that ignore a Wi-Fi proxy. Recommended.</p>
-    <ol>
-      <li>
-        <span class="step-title">Install the WireGuard app.</span><br>
-        <a class="deeplink" href="{store_url}">Get WireGuard on the App Store</a>
-      </li>
-      <li>
-        <span class="step-title">Add a tunnel from this QR code.</span><br>
-        In WireGuard: <em>Add a tunnel &rarr; Create from QR code</em>, then scan:
-        <div class="qr">{qr}</div>
-        Or <a href="{WIREGUARD_CONF_PATH}">download the .conf file</a> and import it.
-      </li>
-      <li>
-        <span class="step-title">Turn the tunnel on</span> and allow the VPN prompt.
-        You should see the VPN icon in the status bar.
-      </li>
-      <li>
-        <span class="step-title">Install the certificate.</span><br>
-        <a class="dl-inline" href="{MOBILECONFIG_PATH}">Download certificate profile</a>,
-        then Settings &rarr; General &rarr; VPN &amp; Device Management &rarr; tap the
-        mitm-tracker CA &rarr; Install.
-      </li>
-      <li class="critical">
-        <span class="step-title">⚠️ Enable FULL TRUST — this is the step everyone misses.</span><br>
-        Settings &rarr; General &rarr; About &rarr; <strong>Certificate Trust Settings</strong>
-        &rarr; turn ON the toggle for <strong>mitmproxy</strong>.<br>
-        Without this, every HTTPS request fails the TLS handshake and apps show
-        connection errors — the proxy is working, the device just doesn't trust it yet.
-      </li>
-    </ol>
-  </div>
+      <section class="tab-panel" data-panel="wireguard">
+        <p class="lead">Routes <strong>all</strong> traffic from this device through
+        mitm-tracker, including native apps and QUIC that ignore a Wi-Fi proxy.</p>
+        <ol>
+          <li>
+            <span class="step-title">Install the WireGuard app.</span><br>
+            <a class="btn" href="{store_url}">Get WireGuard on the App Store</a>
+          </li>
+          <li>
+            <span class="step-title">Add a tunnel from this QR.</span><br>
+            In WireGuard: <em>Add a tunnel &rarr; Create from QR code</em>, then scan:
+            <div class="qr">{qr}</div>
+            <a class="link" href="{WIREGUARD_CONF_PATH}">or download the .conf and import it</a>
+          </li>
+          <li>
+            <span class="step-title">Turn the tunnel on</span> and allow the VPN prompt.
+            Look for the VPN icon in the status bar.
+          </li>
+        </ol>
+      </section>
+"""
+
+
+def _wifi_tab(ctx: HelpPageContext) -> str:
+    ip = html.escape(ctx.proxy_ip)
+    port = ctx.proxy_port
+    wifi_link = _deeplink_button("Open Wi-Fi settings", "prefs:root=WIFI")
+    return f"""
+      <section class="tab-panel" data-panel="wifi">
+        <p class="lead">Simpler, but only Safari and apps that honour the Wi-Fi proxy
+        are captured — many native apps and QUIC traffic are not.</p>
+        <div class="proxy">
+          <div class="field">
+            <span class="label">Server</span>
+            <code>{ip}</code>
+            <button class="copy" onclick="copyValue('{ip}', this)">Copy</button>
+          </div>
+          <div class="field">
+            <span class="label">Port</span>
+            <code>{port}</code>
+            <button class="copy" onclick="copyValue('{port}', this)">Copy</button>
+          </div>
+        </div>
+        <ol>
+          <li>
+            <span class="step-title">Set a manual proxy.</span><br>
+            Settings &rarr; Wi-Fi &rarr; tap your network &rarr; Configure Proxy &rarr;
+            Manual. Enter the Server and Port above, then Save.<br>
+            {wifi_link}
+          </li>
+        </ol>
+      </section>
 """
 
 
 def render_help_page(ctx: HelpPageContext) -> str:
-    ip = html.escape(ctx.proxy_ip)
-    port = ctx.proxy_port
-    wireguard_section = _wireguard_section(ctx)
-    wifi_section_title = (
-        "Alternative: Wi-Fi proxy (Safari &amp; proxy-aware apps only)"
-        if ctx.mode == "wireguard"
-        else "On-device steps"
-    )
-    wifi_link = _deeplink_button("Open Wi-Fi settings", "prefs:root=WIFI")
+    has_wireguard = ctx.mode == "wireguard" and bool(ctx.wireguard_conf)
     profiles_link = _deeplink_button(
         "Open VPN & Device Management",
         "prefs:root=General&path=ManagedConfigurationList",
@@ -94,6 +102,21 @@ def render_help_page(ctx: HelpPageContext) -> str:
         "Open Certificate Trust Settings",
         "prefs:root=General&path=About/CERT_TRUST_SETTINGS",
     )
+
+    tabs = []
+    panels = []
+    if has_wireguard:
+        tabs.append('<button class="tab active" data-tab="wireguard">WireGuard — every app</button>')
+        tabs.append('<button class="tab" data-tab="wifi">Wi-Fi proxy — Safari only</button>')
+        panels.append(_wireguard_tab(ctx))
+        panels.append(_wifi_tab(ctx))
+    else:
+        tabs.append('<button class="tab active" data-tab="wifi">Wi-Fi proxy</button>')
+        panels.append(_wifi_tab(ctx))
+
+    tabs_html = "".join(tabs)
+    panels_html = "".join(panels)
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -103,96 +126,104 @@ def render_help_page(ctx: HelpPageContext) -> str:
 <style>
   body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 1.5rem;
          color: #1d1d1f; background: #f5f5f7; line-height: 1.5; }}
-  .card {{ max-width: 640px; margin: 0 auto; background: #fff; border-radius: 16px;
+  .card {{ max-width: 640px; margin: 0 auto 1rem; background: #fff; border-radius: 16px;
           padding: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
   h1 {{ font-size: 1.4rem; margin: 0 0 .25rem; }}
-  .lead {{ color: #6e6e73; margin: 0 0 1.5rem; }}
+  .step-label {{ text-transform: uppercase; letter-spacing: .04em; font-size: .75rem;
+                color: #0071e3; font-weight: 700; margin: 0 0 .25rem; }}
+  h2 {{ font-size: 1.2rem; margin: .1rem 0 .75rem; }}
+  .lead {{ color: #6e6e73; margin: 0 0 1rem; }}
+  .tabs {{ display: flex; gap: .4rem; background: #f0f0f2; border-radius: 12px;
+          padding: .3rem; margin-bottom: 1rem; }}
+  .tab {{ flex: 1; border: none; background: transparent; border-radius: 9px;
+         padding: .55rem .5rem; font-size: .9rem; font-weight: 600; color: #6e6e73;
+         cursor: pointer; }}
+  .tab.active {{ background: #fff; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,.12); }}
+  .tab-panel {{ display: none; }}
+  .tab-panel.active {{ display: block; }}
   .proxy {{ background: #f0f7ff; border: 1px solid #cfe4ff; border-radius: 12px;
-           padding: 1rem; margin-bottom: 1.5rem; font-size: 1.05rem; }}
-  .proxy code {{ font-size: 1.15rem; font-weight: 600; }}
-  .field {{ display: flex; align-items: center; gap: .6rem; margin-top: .4rem; }}
+           padding: 1rem; margin-bottom: 1rem; font-size: 1.05rem; }}
+  .field {{ display: flex; align-items: center; gap: .6rem; }}
+  .field + .field {{ margin-top: .4rem; }}
   .field .label {{ min-width: 4.5rem; color: #6e6e73; }}
+  .field code {{ font-size: 1.15rem; font-weight: 600; }}
   .copy {{ margin-left: auto; border: 1px solid #cfe4ff; background: #fff; color: #0071e3;
           border-radius: 8px; padding: .3rem .7rem; font-size: .85rem; cursor: pointer; }}
   .copy:active {{ background: #e8e8ed; }}
-  .download {{ display: block; text-align: center; background: #0071e3; color: #fff;
-              text-decoration: none; padding: .9rem 1rem; border-radius: 12px;
-              font-weight: 600; font-size: 1.1rem; margin: .5rem 0 .25rem; }}
-  .download.secondary {{ background: #e8e8ed; color: #1d1d1f; font-weight: 500;
-                        font-size: .95rem; }}
-  ol {{ padding-left: 1.25rem; }}
+  ol {{ padding-left: 1.25rem; margin: .5rem 0 0; }}
   li {{ margin-bottom: .75rem; }}
   .step-title {{ font-weight: 600; }}
+  .btn {{ display: inline-block; margin-top: .35rem; padding: .5rem .9rem;
+         background: #0071e3; color: #fff; border-radius: 9px; text-decoration: none;
+         font-weight: 600; font-size: .9rem; }}
+  .link {{ color: #0071e3; }}
   .deeplink {{ display: inline-block; margin: .35rem .5rem .1rem 0; padding: .4rem .7rem;
               background: #e8e8ed; border-radius: 8px; text-decoration: none;
               color: #0071e3; font-size: .9rem; }}
   .deeplink-note {{ color: #a1a1a6; font-size: .8rem; }}
-  .warn {{ background: #fff7e6; border: 1px solid #ffe0a3; border-radius: 12px;
-          padding: .75rem 1rem; margin-top: 1.5rem; font-size: .9rem; color: #6e4b00; }}
-  .wg {{ background: #f0fff4; border: 1px solid #b7e4c7; border-radius: 12px;
-        padding: 1rem 1.25rem; margin-bottom: 1.5rem; }}
-  .wg h2 {{ margin-top: 0; }}
   .qr {{ text-align: center; margin: .75rem 0; }}
   .qr svg {{ width: 220px; height: 220px; max-width: 100%; }}
+  .download {{ display: block; text-align: center; background: #0071e3; color: #fff;
+              text-decoration: none; padding: .8rem 1rem; border-radius: 12px;
+              font-weight: 600; font-size: 1.05rem; margin: .5rem 0 .25rem; }}
+  .download.secondary {{ background: #e8e8ed; color: #1d1d1f; font-weight: 500;
+                        font-size: .9rem; }}
   .critical {{ background: #fff7e6; border: 1px solid #ffe0a3; border-radius: 10px;
-              padding: .6rem .8rem; list-style-position: inside; }}
-  .dl-inline {{ color: #0071e3; text-decoration: underline; }}
+              padding: .75rem .9rem; margin-top: 1rem; color: #6e4b00; }}
+  .critical .step-title {{ color: #6e4b00; }}
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>Set up this device for mitm-tracker</h1>
-  <p class="lead">Route this iPhone or iPad through the proxy and trust its certificate.</p>
-{wireguard_section}
+  <h1>Set up this device</h1>
+  <p class="lead">Two steps: connect this device to mitm-tracker, then trust its
+  certificate. Pick how to connect:</p>
+
+  <p class="step-label">Step 1 — Connect</p>
+  <div class="tabs">{tabs_html}</div>
+  {panels_html}
+</div>
+
+<div class="card">
+  <p class="step-label">Step 2 — Trust the certificate</p>
+  <h2>Required for HTTPS decryption</h2>
   <a class="download" href="{MOBILECONFIG_PATH}">Download certificate profile</a>
   <a class="download secondary" href="{PEM_PATH}">Download raw .pem instead</a>
-
-  <h2>{wifi_section_title}</h2>
-
-  <div class="proxy">
-    <div>Wi-Fi manual proxy:</div>
-    <div class="field">
-      <span class="label">Server</span>
-      <code id="proxy-ip">{ip}</code>
-      <button class="copy" onclick="copyValue('{ip}', this)">Copy</button>
-    </div>
-    <div class="field">
-      <span class="label">Port</span>
-      <code id="proxy-port">{port}</code>
-      <button class="copy" onclick="copyValue('{port}', this)">Copy</button>
-    </div>
-  </div>
-
   <ol>
     <li>
-      <span class="step-title">Point Wi-Fi at the proxy.</span><br>
-      Settings &rarr; Wi-Fi &rarr; tap your network &rarr; Configure Proxy &rarr; Manual.
-      Enter Server <code>{ip}</code> and Port <code>{port}</code>, then Save.<br>
-      {wifi_link}
-    </li>
-    <li>
-      <span class="step-title">Download &amp; install the profile.</span><br>
-      Tap “Download certificate profile” above. iOS shows “Profile Downloaded”.
-      Open Settings &rarr; General &rarr; VPN &amp; Device Management &rarr; tap the
-      mitm-tracker CA profile &rarr; Install (enter passcode, tap Install twice).<br>
+      <span class="step-title">Install the profile.</span><br>
+      After downloading, open Settings &rarr; General &rarr; VPN &amp; Device
+      Management &rarr; tap the <strong>mitm-tracker CA</strong> &rarr; Install
+      (passcode, Install twice).<br>
       {profiles_link}
     </li>
-    <li>
-      <span class="step-title">Enable full trust.</span><br>
-      Settings &rarr; General &rarr; About &rarr; Certificate Trust Settings &rarr;
-      turn ON full trust for the mitmproxy certificate. iOS does not do this
-      automatically.<br>
+    <li class="critical">
+      <span class="step-title">⚠️ Enable FULL TRUST — the step everyone misses.</span><br>
+      Settings &rarr; General &rarr; About &rarr; <strong>Certificate Trust
+      Settings</strong> &rarr; turn ON the toggle for <strong>mitmproxy</strong>.
+      Without it, every HTTPS request fails the TLS handshake and apps show
+      connection errors — the proxy is working, the device just doesn't trust it yet.<br>
       {trust_link}
     </li>
   </ol>
-
-  <div class="warn">
-    The “Open …” buttons are a best-effort shortcut. Apple restricts Settings
-    deeplinks from Safari, so on iOS 17+ they may do nothing — follow the written
-    steps in that case.
-  </div>
+  <p class="deeplink-note">The “Open …” buttons are best-effort. Apple blocks Settings
+  deeplinks from Safari on iOS 17+, so they may do nothing — use the written steps.</p>
 </div>
 <script>
+  document.querySelectorAll(".tab").forEach(function (tab) {{
+    tab.addEventListener("click", function () {{
+      var name = tab.getAttribute("data-tab");
+      document.querySelectorAll(".tab").forEach(function (t) {{
+        t.classList.toggle("active", t === tab);
+      }});
+      document.querySelectorAll(".tab-panel").forEach(function (p) {{
+        p.classList.toggle("active", p.getAttribute("data-panel") === name);
+      }});
+    }});
+  }});
+  var first = document.querySelector(".tab-panel");
+  if (first) first.classList.add("active");
+
   function copyValue(value, button) {{
     var done = function () {{
       var original = button.textContent;
