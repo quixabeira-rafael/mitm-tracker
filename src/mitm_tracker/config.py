@@ -20,6 +20,8 @@ DEFAULT_LISTEN_HOST = "127.0.0.1"
 
 LAN_LISTEN_HOST = "0.0.0.0"
 DEFAULT_HELP_SERVER_PORT = 8888
+DEFAULT_WIREGUARD_PORT = 51820
+WIREGUARD_KEYFILE = "wireguard.conf"
 
 _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", re.IGNORECASE)
 
@@ -69,6 +71,10 @@ class Workspace:
     @property
     def proxy_backup_path(self) -> Path:
         return self.runtime_dir / PROXY_BACKUP_FILENAME
+
+    @property
+    def wireguard_keyfile(self) -> Path:
+        return self.runtime_dir / WIREGUARD_KEYFILE
 
     def ensure(self) -> None:
         self.base.mkdir(parents=True, exist_ok=True)

@@ -22,6 +22,7 @@ classifiers = [
 
 dependencies = [
     "mitmproxy>=11.0",
+    "segno>=1.6",
 ]
 
 [project.optional-dependencies]

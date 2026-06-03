@@ -33,6 +33,14 @@ def test_render_help_page_includes_proxy_and_deeplinks():
     assert "may not work on iOS 17+" in page
 
 
+def test_render_help_page_has_copy_buttons():
+    page = render_help_page(_ctx())
+    assert "copyValue('192.168.0.10'" in page
+    assert "copyValue('8080'" in page
+    assert "function copyValue" in page
+    assert "function fallbackCopy" in page
+
+
 @pytest.fixture
 def running_server(tmp_path: Path):
     pem = tmp_path / "ca.pem"

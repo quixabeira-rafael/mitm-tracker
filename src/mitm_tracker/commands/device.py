@@ -6,13 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mitm_tracker import cert_manager, device_server, net_info
+from mitm_tracker import cert_manager, device_server, device_wireguard, net_info
 from mitm_tracker.cert_manager import CertManagerError
 from mitm_tracker.commands import record as record_commands
 from mitm_tracker.commands.record import ProxyLaunchError
 from mitm_tracker.config import (
     DEFAULT_HELP_SERVER_PORT,
     DEFAULT_PROXY_PORT,
+    DEFAULT_WIREGUARD_PORT,
     LAN_LISTEN_HOST,
     workspace_for,
 )
@@ -40,8 +41,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Listen on the LAN for a physical device and serve the setup page.",
     )
     start_p.add_argument("--mode", choices=["all", "listed"], default="all")
+    start_p.add_argument(
+        "--transport",
+        choices=["wifi-proxy", "wireguard"],
+        default="wifi-proxy",
+        help="wifi-proxy (Safari/proxy-aware apps) or wireguard (every app, incl. QUIC).",
+    )
     start_p.add_argument("--port", type=int, default=DEFAULT_PROXY_PORT)
     start_p.add_argument("--help-port", type=int, default=DEFAULT_HELP_SERVER_PORT)
+    start_p.add_argument("--wireguard-port", type=int, default=DEFAULT_WIREGUARD_PORT)
     start_p.add_argument(
         "--keep-cache",
         action="store_true",
@@ -70,10 +78,15 @@ def register_internal(subparsers: argparse._SubParsersAction) -> None:
     serve_p.add_argument("--help-port", type=int, required=True)
     serve_p.add_argument("--proxy-ip", required=True)
     serve_p.add_argument("--proxy-port", type=int, required=True)
+    serve_p.add_argument("--page-mode", default="regular")
+    serve_p.add_argument("--wg-conf")
     serve_p.set_defaults(func=cmd_serve_page)
 
 
 def cmd_serve_page(args: argparse.Namespace) -> int:
+    wireguard_conf = None
+    if args.wg_conf:
+        wireguard_conf = Path(args.wg_conf).read_text(encoding="utf-8")
     device_server.run_server(
         host=args.host,
         port=args.help_port,
@@ -81,6 +94,8 @@ def cmd_serve_page(args: argparse.Namespace) -> int:
         proxy_ip=args.proxy_ip,
         proxy_port=args.proxy_port,
         help_port=args.help_port,
+        mode=args.page_mode,
+        wireguard_conf=wireguard_conf,
     )
     return EXIT_OK
 
@@ -107,6 +122,8 @@ def _spawn_help_server(
     proxy_ip: str,
     proxy_port: int,
     workspace_root: Path,
+    page_mode: str = "regular",
+    wg_conf_path: Path | None = None,
 ) -> int:
     binary = _find_self_binary()
     if binary is None:
@@ -129,7 +146,11 @@ def _spawn_help_server(
         proxy_ip,
         "--proxy-port",
         str(proxy_port),
+        "--page-mode",
+        page_mode,
     ]
+    if wg_conf_path is not None:
+        cmd += ["--wg-conf", str(wg_conf_path)]
     process = subprocess.Popen(
         cmd,
         cwd=str(workspace_root),
@@ -174,13 +195,30 @@ def cmd_start(args: argparse.Namespace) -> int:
             exit_code=EXIT_INVALID_STATE,
         )
 
+    wireguard = args.transport == "wireguard"
+    proxy_mode = "wireguard" if wireguard else "regular"
+    proxy_port = args.wireguard_port if wireguard else args.port
+
+    wg_conf_text: str | None = None
+    wg_conf_path: Path | None = None
+    if wireguard:
+        keyfile = device_wireguard.ensure_keyfile(workspace.wireguard_keyfile)
+        wg_cfg = device_wireguard.client_config(
+            keyfile, endpoint_host=address.ip, endpoint_port=proxy_port
+        )
+        wg_conf_text = wg_cfg.to_conf()
+        wg_conf_path = workspace.runtime_dir / "wireguard-client.conf"
+        wg_conf_path.write_text(wg_conf_text, encoding="utf-8")
+
     try:
         result = record_commands.launch_proxy(
             mode=args.mode,
-            port=args.port,
+            port=proxy_port,
             listen_host=LAN_LISTEN_HOST,
             keep_cache=args.keep_cache,
             configure_system_proxy=False,
+            proxy_mode=proxy_mode,
+            wireguard_keyfile=workspace.wireguard_keyfile if wireguard else None,
         )
     except ProxyLaunchError as exc:
         return emit_error(
@@ -197,6 +235,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             proxy_ip=address.ip,
             proxy_port=result.port,
             workspace_root=workspace.root,
+            page_mode=proxy_mode,
+            wg_conf_path=wg_conf_path,
         )
     except Exception as exc:
         _stop_session(args.json_mode)
@@ -212,6 +252,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     help_url = f"http://{address.ip}:{args.help_port}/"
     payload = {
         "started": True,
+        "transport": "wireguard" if wireguard else "wifi-proxy",
         "pid": result.pid,
         "help_pid": help_pid,
         "proxy_ip": address.ip,
@@ -228,12 +269,25 @@ def cmd_start(args: argparse.Namespace) -> int:
         emit_json(payload)
         return EXIT_OK
 
-    emit_text(
-        "device proxy listening on the LAN.\n\n"
-        f"Proxy:    {address.ip}:{result.port}\n"
-        f"Help page: {help_url}\n\n"
-        + _setup_steps_text(address.ip, result.port, help_url)
-    )
+    if wireguard:
+        emit_text(
+            "device WireGuard server listening on the LAN (captures every app).\n\n"
+            f"Open the setup page on the device and scan the QR with the WireGuard app:\n"
+            f"  {help_url}\n\n"
+            "On the iPhone/iPad (same Wi-Fi):\n"
+            "  1. Install the WireGuard app from the App Store\n"
+            "  2. Open the setup page above, scan the QR (Add tunnel > from QR code)\n"
+            "  3. Turn the tunnel on and allow the VPN prompt\n"
+            "  4. Settings > General > VPN & Device Management > install the mitm-tracker CA\n"
+            "  5. Settings > General > About > Certificate Trust Settings > enable full trust\n"
+        )
+    else:
+        emit_text(
+            "device proxy listening on the LAN.\n\n"
+            f"Proxy:    {address.ip}:{result.port}\n"
+            f"Help page: {help_url}\n\n"
+            + _setup_steps_text(address.ip, result.port, help_url)
+        )
     if result.ssl_count == 0:
         emit_text(
             f"warning: SSL list is empty for profile '{result.profile}'; HTTPS will "
@@ -267,8 +321,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"http://{lan_ip}:{help_port}/" if lan_ip and help_port else None
     )
 
+    proxy_mode = state.get("proxy_mode") or "regular"
+    transport = "wireguard" if proxy_mode == "wireguard" else "wifi-proxy"
+
     payload = {
         "running": running,
+        "transport": transport,
         "lan_bound": lan_bound,
         "listen_host": listen_host,
         "port": state.get("port"),
@@ -290,6 +348,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     reach = f"{lan_ip}:{state.get('port')}" if lan_ip and state.get("port") else "-"
     emit_text(
         f"state: {label}\n"
+        f"transport: {transport}\n"
         f"listen_host: {listen_host or '-'}\n"
         f"lan_bound: {lan_bound}\n"
         f"reachable_at: {reach}\n"

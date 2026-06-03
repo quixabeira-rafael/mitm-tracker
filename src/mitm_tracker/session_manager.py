@@ -67,6 +67,7 @@ class SessionManager:
         session_db: Path,
         proxy_service: str | None,
         listen_host: str | None = None,
+        proxy_mode: str = "regular",
     ) -> dict:
         state = self.read_state()
         state.update(
@@ -80,6 +81,7 @@ class SessionManager:
                 "active_session": str(session_db),
                 "proxy_service": proxy_service,
                 "listen_host": listen_host,
+                "proxy_mode": proxy_mode,
                 "stopped_at": None,
                 "help_pid": None,
                 "help_port": None,
