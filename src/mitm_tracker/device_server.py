@@ -162,7 +162,8 @@ def render_help_page(ctx: HelpPageContext) -> str:
               color: #0071e3; font-size: .9rem; }}
   .deeplink-note {{ color: #a1a1a6; font-size: .8rem; }}
   .qr {{ text-align: center; margin: .75rem 0; }}
-  .qr svg {{ width: 220px; height: 220px; max-width: 100%; }}
+  .qr svg {{ width: 300px; height: 300px; max-width: 92%; image-rendering: pixelated;
+            background: #fff; padding: 8px; border-radius: 8px; }}
   .download {{ display: block; text-align: center; background: #0071e3; color: #fff;
               text-decoration: none; padding: .8rem 1rem; border-radius: 12px;
               font-weight: 600; font-size: 1.05rem; margin: .5rem 0 .25rem; }}
