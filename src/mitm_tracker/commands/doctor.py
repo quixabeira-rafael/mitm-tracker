@@ -95,4 +95,15 @@ def _render_text(results: list[doctor.CheckResult], aggregated: str) -> None:
         f"{counts[doctor.STATUS_INFO]} info "
         f"-> overall: {aggregated}"
     )
+
+    blocking = [
+        r for r in results if r.status in (doctor.STATUS_ERROR, doctor.STATUS_WARN)
+    ]
+    if blocking:
+        lines.append("")
+        lines.append(f"What makes the status '{aggregated}':")
+        for result in blocking:
+            glyph = _STATUS_GLYPH.get(result.status, "?")
+            lines.append(f"  {glyph} {result.name}: {result.detail}")
+
     emit_text("\n".join(lines))

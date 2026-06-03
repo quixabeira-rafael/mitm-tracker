@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -74,57 +75,76 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     logs_p.set_defaults(func=cmd_logs)
 
 
-def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
+class ProxyLaunchError(RuntimeError):
+    def __init__(self, error: str, message: str, *, exit_code: int) -> None:
+        super().__init__(message)
+        self.error = error
+        self.message = message
+        self.exit_code = exit_code
+
+
+@dataclass
+class ProxyLaunchResult:
+    pid: int
+    mode: str
+    port: int
+    listen_host: str
+    profile: str
+    session_db: Path
+    ssl_count: int
+    proxy_service: str | None
+    no_cache: bool
+
+
+def launch_proxy(
+    *,
+    mode: str,
+    port: int,
+    listen_host: str,
+    keep_cache: bool,
+    configure_system_proxy: bool,
+    spawn: SpawnFn | None = None,
+) -> ProxyLaunchResult:
     workspace = workspace_for()
     workspace.ensure()
     sm = SessionManager(workspace)
     pm = ProfileManager(workspace)
     profile = pm.active_name()
 
-    if sm.is_running():
-        state = sm.read_state()
-        if args.json_mode:
-            emit_json({"already_running": True, **state})
-        else:
-            emit_text(f"already running (pid={state.get('pid')})")
-        return EXIT_OK
-
     mitmdump_bin = _find_mitmdump()
     if not mitmdump_bin:
-        return emit_error(
+        raise ProxyLaunchError(
             "mitmproxy_missing",
             "mitmdump not found; ensure mitmproxy is installed in the same environment as mitm-tracker",
-            json_mode=args.json_mode,
             exit_code=EXIT_SYSTEM,
         )
 
     db_path = _new_session_db(workspace, profile)
     FlowStore.init_session(
         db_path,
-        mode=args.mode,
-        listen_host=args.listen_host,
-        listen_port=args.port,
+        mode=mode,
+        listen_host=listen_host,
+        listen_port=port,
         profile=profile,
     ).close()
 
     proxy_service: str | None = None
-    if not args.no_system_proxy:
+    if configure_system_proxy:
         try:
-            pm = ProxyManager()
-            proxy_service = pm.get_active_service()
-            backup = pm.snapshot(proxy_service)
+            proxy_mgr = ProxyManager()
+            proxy_service = proxy_mgr.get_active_service()
+            backup = proxy_mgr.snapshot(proxy_service)
             workspace.proxy_backup_path.write_text(
                 json.dumps(backup.to_dict(), indent=2),
                 encoding="utf-8",
             )
-            pm.set_proxy(proxy_service, "127.0.0.1", args.port)
+            proxy_mgr.set_proxy(proxy_service, "127.0.0.1", port)
         except ProxyManagerError as exc:
-            return emit_error(
+            raise ProxyLaunchError(
                 "proxy_failed",
                 f"failed to configure macOS proxy: {exc}",
-                json_mode=args.json_mode,
                 exit_code=EXIT_SYSTEM,
-            )
+            ) from exc
 
     ssl_list = SslList.load(workspace.ssl_path(profile))
     allow_regex = ssl_list.to_allow_hosts_regex()
@@ -132,21 +152,21 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
 
     maplocal_dir = workspace.profile_dir(profile)
 
-    no_cache = not args.keep_cache
+    no_cache = not keep_cache
 
     cmd = _build_mitmdump_command(
         mitmdump_bin=mitmdump_bin,
-        listen_host=args.listen_host,
-        listen_port=args.port,
+        listen_host=listen_host,
+        listen_port=port,
         db_path=db_path,
-        mode=args.mode,
+        mode=mode,
         allow_regex=allow_regex,
         maplocal_dir=maplocal_dir,
         no_cache=no_cache,
     )
     log_handle = workspace.log_path.open("ab", buffering=0)
     log_handle.write(
-        f"\n--- record start {_now_iso()} mode={args.mode} port={args.port} ---\n".encode()
+        f"\n--- record start {_now_iso()} mode={mode} port={port} listen={listen_host} ---\n".encode()
     )
 
     spawn_fn = spawn or _spawn_default
@@ -161,34 +181,76 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
         )
     except Exception as exc:
         log_handle.close()
-        return emit_error(
+        raise ProxyLaunchError(
             "spawn_failed",
             f"failed to spawn mitmdump: {exc}",
-            json_mode=args.json_mode,
             exit_code=EXIT_SYSTEM,
-        )
+        ) from exc
 
     sm.write_pid(process.pid)
     state = sm.start(
         pid=process.pid,
-        mode=args.mode,
-        port=args.port,
+        mode=mode,
+        port=port,
         session_db=db_path,
         proxy_service=proxy_service,
+        listen_host=listen_host,
     )
     log_handle.close()
 
+    return ProxyLaunchResult(
+        pid=state["pid"],
+        mode=state["mode"],
+        port=state["port"],
+        listen_host=listen_host,
+        profile=profile,
+        session_db=Path(state["session_db"]),
+        ssl_count=ssl_count,
+        proxy_service=proxy_service,
+        no_cache=no_cache,
+    )
+
+
+def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
+    workspace = workspace_for()
+    sm = SessionManager(workspace)
+
+    if sm.is_running():
+        state = sm.read_state()
+        if args.json_mode:
+            emit_json({"already_running": True, **state})
+        else:
+            emit_text(f"already running (pid={state.get('pid')})")
+        return EXIT_OK
+
+    try:
+        result = launch_proxy(
+            mode=args.mode,
+            port=args.port,
+            listen_host=args.listen_host,
+            keep_cache=args.keep_cache,
+            configure_system_proxy=not args.no_system_proxy,
+            spawn=spawn,
+        )
+    except ProxyLaunchError as exc:
+        return emit_error(
+            exc.error,
+            exc.message,
+            json_mode=args.json_mode,
+            exit_code=exc.exit_code,
+        )
+
     payload = {
         "started": True,
-        "pid": state["pid"],
-        "mode": state["mode"],
-        "port": state["port"],
-        "profile": profile,
-        "session_db": state["session_db"],
-        "ssl_decryption_active": ssl_count > 0,
-        "ssl_list_count": ssl_count,
-        "proxy_service": proxy_service,
-        "no_cache": no_cache,
+        "pid": result.pid,
+        "mode": result.mode,
+        "port": result.port,
+        "profile": result.profile,
+        "session_db": str(result.session_db),
+        "ssl_decryption_active": result.ssl_count > 0,
+        "ssl_list_count": result.ssl_count,
+        "proxy_service": result.proxy_service,
+        "no_cache": result.no_cache,
     }
     if args.json_mode:
         emit_json(payload)
@@ -201,11 +263,11 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
                 db=payload["session_db"],
             )
         )
-    if ssl_count == 0:
+    if result.ssl_count == 0:
         emit_text(
             "warning: SSL list is empty for profile '{p}'; HTTPS will pass "
             "through without decryption (no flow bodies will be captured). "
-            "Add hosts with `mitm-tracker ssl add <pattern>` and restart record.".format(p=profile),
+            "Add hosts with `mitm-tracker ssl add <pattern>` and restart record.".format(p=result.profile),
             stream=sys.stderr,
         )
     return EXIT_OK
@@ -225,21 +287,10 @@ def cmd_stop(args: argparse.Namespace, *, kill: Callable[[int, int], None] | Non
 
     pid = int(state.get("pid") or 0)
     killer = kill or os.kill
-    if pid and sm._pid_alive(pid):
-        try:
-            killer(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if not sm._pid_alive(pid):
-                break
-            time.sleep(0.1)
-        if sm._pid_alive(pid):
-            try:
-                killer(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    _terminate_pid(sm, pid, killer)
+
+    help_pid = int(state.get("help_pid") or 0)
+    _terminate_pid(sm, help_pid, killer)
 
     proxy_service = state.get("proxy_service")
     backup_path = workspace.proxy_backup_path
@@ -317,6 +368,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "active_session": state.get("active_session"),
         "captured_count": captured,
         "proxy_service": state.get("proxy_service"),
+        "listen_host": state.get("listen_host"),
     }
     if args.json_mode:
         emit_json(payload)
@@ -424,3 +476,22 @@ def _now_iso() -> str:
 
 def _spawn_default(cmd, **kwargs) -> subprocess.Popen:
     return subprocess.Popen(cmd, **kwargs)
+
+
+def _terminate_pid(sm: SessionManager, pid: int, killer: Callable[[int, int], None]) -> None:
+    if not pid or not sm._pid_alive(pid):
+        return
+    try:
+        killer(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not sm._pid_alive(pid):
+            break
+        time.sleep(0.1)
+    if sm._pid_alive(pid):
+        try:
+            killer(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass

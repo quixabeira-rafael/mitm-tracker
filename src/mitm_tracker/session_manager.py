@@ -66,6 +66,7 @@ class SessionManager:
         port: int,
         session_db: Path,
         proxy_service: str | None,
+        listen_host: str | None = None,
     ) -> dict:
         state = self.read_state()
         state.update(
@@ -78,7 +79,23 @@ class SessionManager:
                 "session_db": str(session_db),
                 "active_session": str(session_db),
                 "proxy_service": proxy_service,
+                "listen_host": listen_host,
                 "stopped_at": None,
+                "help_pid": None,
+                "help_port": None,
+                "lan_ip": None,
+            }
+        )
+        self.write_state(state)
+        return state
+
+    def set_device_help(self, *, help_pid: int, help_port: int, lan_ip: str) -> dict:
+        state = self.read_state()
+        state.update(
+            {
+                "help_pid": int(help_pid),
+                "help_port": int(help_port),
+                "lan_ip": lan_ip,
             }
         )
         self.write_state(state)
@@ -89,6 +106,9 @@ class SessionManager:
         state["running"] = False
         state["pid"] = None
         state["stopped_at"] = self._clock()
+        state["help_pid"] = None
+        state["help_port"] = None
+        state["lan_ip"] = None
         self.write_state(state)
         return state
 

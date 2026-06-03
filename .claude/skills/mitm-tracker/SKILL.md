@@ -30,6 +30,7 @@ Six facts that are not obvious from `--help`:
 - "Reproduce this request outside the app" → `query curl <seq>`
 - "Make `/api/users` return an empty list" → `maplocal from-flow <seq>` then edit the body
 - "Capture network traffic from the simulator" → `record start`
+- "Capture traffic from a real iPhone / physical device" → `device start` (Workflow A2)
 - "I added a new SSL host but I don't see it decrypted" → restart record (gotcha #3)
 
 ## Workflow A — first-time setup in a new project
@@ -49,6 +50,27 @@ mitm-tracker record start           # Touch ID prompt instead of password (after
 The simulator inherits the macOS system proxy automatically — no manual proxy config inside iOS Settings.
 
 `setup install` is idempotent and cheap to re-run; if both Touch ID and sudo cache are already configured, it returns without invoking sudo. After running it once, subsequent `record start`/`record stop` typically share a single fingerprint tap (sudo cache is scoped to `networksetup` for 60 min).
+
+## Workflow A2 — capture from a physical iOS device
+
+For a real iPhone/iPad (not the simulator), use `device start` instead of `record start`:
+
+```bash
+cd /path/to/project-root
+mitm-tracker ssl add "*.api.example.com"   # same SSL-list rules as record
+mitm-tracker device start                  # binds proxy to the LAN (0.0.0.0), serves a setup page
+#   Proxy:    192.168.1.44:8080
+#   Help page: http://192.168.1.44:8888/
+```
+
+`device start` differs from `record start` in two ways: it binds the proxy to the LAN so the phone can reach it, and it **does not change this Mac's system proxy** (no sudo/networksetup prompt — the phone is the client). Both the proxy and the help page are daemonized and tied together: `device start` returns immediately, and `device stop` (or `record stop`, or the tray Stop button) tears down **both** at once. The help server PID, port, and LAN IP are persisted in `state.json` (`help_pid`/`help_port`/`lan_ip`).
+
+The on-device steps **cannot be automated** and the user must do them by hand:
+1. Settings → Wi-Fi → (network) → Configure Proxy → Manual → enter the printed IP/port.
+2. Open the help page (or `http://mitm.it`) in Safari → download the profile → Settings → General → VPN & Device Management → install the *mitm-tracker CA*.
+3. Settings → General → About → Certificate Trust Settings → enable full trust. **Required** — iOS never auto-trusts a manually installed root for SSL.
+
+The help page also renders best-effort `prefs:root=…` Settings deeplinks, but Apple blocks those from Safari on iOS 17+, so treat the written steps as authoritative. Use `mitm-tracker doctor` to confirm the LAN address, that the proxy is LAN-bound, and that the macOS firewall is not blocking the incoming connection.
 
 ## Workflow B — inspect a running capture
 
@@ -110,6 +132,8 @@ mitm-tracker tray install                      # one-time: auto-launch on login 
 
 After `install`, the icon appears immediately and on every subsequent login. Icon: 🟢 running, 🔴 stopped, 🟡 zombie (PID dead but state says running). Menu shows active profile + SSL host count, workspace path, and Start/Stop record actions. Useful for spotting the zombie-state failure mode without polling `record status` manually.
 
+When the running session is a physical-device session (`device start`), the status line shows the reachable LAN address (e.g. `Running (device LAN 192.168.1.44:8080)`) and two extra menu items appear: **Copy device setup link** (copies `http://<ip>:<help-port>/` via `pbcopy`) and **Open device setup page** (opens it in the Mac browser). They are disabled for ordinary loopback `record` sessions.
+
 Click "Quit tray" to exit cleanly: if a record session is RUNNING or CRASHED, the tray runs `record stop` first (one Touch ID tap, restores system proxy, kills mitmdump) before tearing itself down. Plain "Stop record" stops the daemon but keeps the tray alive. The tray sets `NSApplicationActivationPolicyAccessory` at runtime so it doesn't appear in the Dock or Cmd-Tab.
 
 Other actions:
@@ -129,6 +153,7 @@ Other actions:
 | `cert {install,status,simulators}` | Install mitmproxy CA into booted simulator(s) | iOS 26 uses `TrustStore.sqlite3` (sha256); legacy keychain (sha1) still supported |
 | `cert host {install,uninstall,status}` | Trust the mitmproxy CA system-wide on the Mac (DANGEROUS) | Run `--yes` to skip the confirmation banner, `--force` to re-run when previous attempt left trust missing. Always reverse with `cert host uninstall` |
 | `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080 |
+| `device {start,status,stop}` | Proxy a physical iOS device over the LAN + serve its cert/setup page | Binds proxy to `0.0.0.0`, leaves the Mac's own proxy untouched. Daemonizes both the proxy and the setup page and returns; `device stop`/`record stop`/tray stop both together. `--help-port N` overrides 8888. Shares the same session/state as `record` |
 | `query {recent,failures,slow,hosts,show,sql,curl,sessions,use}` | Inspect captured flows | `--json` on every subcommand; `query use <session>` switches active DB |
 | `release [--older-than 24h] [--dry-run]` | Delete stale capture databases | `--no-keep-active` to allow deleting the active one |
 | `tray {run,install,uninstall,status}` | macOS menu bar indicator (🟢/🔴/🟡); requires `[tray]` extra | `tray install` registers a LaunchAgent for auto-launch on login; `tray run` is foreground only |
@@ -165,6 +190,9 @@ Run `mitm-tracker doctor` first. It tells you exactly what's missing and gives t
 - **`record stop` returned exit 0 but the system proxy is still on `127.0.0.1:8080`** → no, it doesn't anymore: the new code returns `EXIT_SYSTEM` on partial failure and emits a structured error on stderr that the tray surfaces as `rumps.alert`. If you still see this, the user is running an old build — `pipx reinstall mitm-tracker` and re-run `setup install`.
 - **Pre-Sonoma macOS (< 14.0)** → `setup install` will write `/etc/pam.d/sudo_local` but Touch ID will not actually trigger because pre-Sonoma's `/etc/pam.d/sudo` does not include `sudo_local`. `mitm-tracker doctor` warns on the macOS version check; tell the user to upgrade or skip with `--skip-touch-id`.
 - **Mac browser HTTPS still broken even with mitmproxy CA "installed"** → `cert install` only trusts the CA inside iOS Simulators. For Safari / Chrome / native apps to trust it, run `mitm-tracker cert host install` separately (system-wide trust, dangerous, reverse with `cert host uninstall`).
+- **Physical iPhone can't reach the proxy** → with `device start`, check `mitm-tracker doctor`: the proxy must be LAN-bound (`0.0.0.0`, not loopback), the phone must be on the **same Wi-Fi**, and the macOS firewall must not be blocking incoming connections (allow `python`/`mitmdump`). The phone needs the IP printed by `device start`, not `127.0.0.1`.
+- **Physical iPhone HTTPS fails after installing the profile** → installing the `.mobileconfig` is not enough on iOS. The user must also enable Settings → General → About → Certificate Trust Settings → full trust for the mitmproxy cert. iOS never auto-trusts a manually installed root for SSL.
+- **`device start` deeplink buttons do nothing on the phone** → expected on iOS 17+; Apple blocks `prefs:root=…` Settings links from Safari. Tell the user to follow the written steps on the page instead.
 
 ## Profile-scoped configuration
 

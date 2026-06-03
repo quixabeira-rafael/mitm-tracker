@@ -3,14 +3,23 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 from enum import Enum
 from typing import Callable
 
 import rumps
 
+from mitm_tracker import doctor
 from mitm_tracker.config import Workspace
 from mitm_tracker.profile_manager import ProfileError, ProfileManager
 from mitm_tracker.session_manager import SessionManager, SessionManagerError
+
+_STATUS_GLYPH = {
+    doctor.STATUS_WARN: "⚠️",
+    doctor.STATUS_ERROR: "❌",
+}
+
+_WARNINGS_REFRESH_TICKS = 15
 
 
 class Status(Enum):
@@ -53,12 +62,19 @@ class TrayApp(rumps.App):
         self._workspace_item = rumps.MenuItem(f"Workspace: {workspace.root}")
         self._start_item = rumps.MenuItem("Start record", callback=self._on_start)
         self._stop_item = rumps.MenuItem("Stop record", callback=self._on_stop)
+        self._copy_link_item = rumps.MenuItem(
+            "Copy device setup link", callback=self._on_copy_device_link
+        )
+        self._open_page_item = rumps.MenuItem(
+            "Open device setup page", callback=self._on_open_device_page
+        )
         self._open_captures_item = rumps.MenuItem(
             "Open captures folder", callback=self._on_open_captures
         )
         self._reveal_state_item = rumps.MenuItem(
             "Reveal state.json in Finder", callback=self._on_reveal_state
         )
+        self._warnings_item = rumps.MenuItem("Warnings")
         self._quit_item = rumps.MenuItem("Quit tray", callback=self._on_quit)
 
         self.menu = [
@@ -66,14 +82,28 @@ class TrayApp(rumps.App):
             self._profile_item,
             self._workspace_item,
             None,
+            self._warnings_item,
+            None,
             self._start_item,
             self._stop_item,
+            None,
+            self._copy_link_item,
+            self._open_page_item,
             None,
             self._open_captures_item,
             self._reveal_state_item,
             None,
             self._quit_item,
         ]
+        self._device_help_url: str | None = None
+        self._warnings_delegate = None
+        self._warnings_snapshot: list[tuple[str, str]] = []
+        self._warnings_rendered_key: tuple | None = None
+        self._warnings_tick = 0
+        self._warnings_computing = False
+
+        self._compute_warnings_snapshot()
+        self._render_warnings()
 
         self._timer = rumps.Timer(self._refresh, interval)
         self._refresh(None)
@@ -81,7 +111,73 @@ class TrayApp(rumps.App):
 
     def run(self, **options) -> None:
         _set_accessory_activation_policy()
+        self._attach_warnings_delegate()
         super().run(**options)
+
+    def _attach_warnings_delegate(self) -> None:
+        nsmenu = getattr(self._warnings_item, "_menu", None)
+        if nsmenu is None:
+            return
+        try:
+            from Foundation import NSObject
+        except ImportError:
+            return
+
+        app = self
+
+        class _WarningsDelegate(NSObject):
+            def menuWillOpen_(self, _menu) -> None:
+                app._render_warnings()
+
+        self._warnings_delegate = _WarningsDelegate.alloc().init()
+        nsmenu.setDelegate_(self._warnings_delegate)
+
+    def _schedule_warnings_recompute(self) -> None:
+        if self._warnings_computing:
+            return
+        self._warnings_computing = True
+        thread = threading.Thread(target=self._recompute_warnings_worker, daemon=True)
+        thread.start()
+
+    def _recompute_warnings_worker(self) -> None:
+        try:
+            title, snapshot = _build_warnings_snapshot()
+        finally:
+            self._warnings_computing = False
+        self._apply_warnings_snapshot(title, snapshot)
+
+    def _apply_warnings_snapshot(self, title: str, snapshot: list[tuple[str, str]]) -> None:
+        def _on_main() -> None:
+            self._warnings_item.title = title
+            self._warnings_snapshot = snapshot
+            self._render_warnings()
+
+        try:
+            from PyObjCTools import AppHelper
+        except ImportError:
+            _on_main()
+            return
+        AppHelper.callAfter(_on_main)
+
+    def _compute_warnings_snapshot(self) -> None:
+        title, snapshot = _build_warnings_snapshot()
+        self._warnings_item.title = title
+        self._warnings_snapshot = snapshot
+
+    def _render_warnings(self) -> None:
+        key = tuple(self._warnings_snapshot)
+        if key == self._warnings_rendered_key:
+            return
+        self._warnings_rendered_key = key
+        if len(self._warnings_item) > 0:
+            self._warnings_item.clear()
+        for title, detail in self._warnings_snapshot:
+            head = rumps.MenuItem(title)
+            head.set_callback(None)
+            self._warnings_item.add(head)
+            body = rumps.MenuItem(f"    {detail}")
+            body.set_callback(None)
+            self._warnings_item.add(body)
 
     def _refresh(self, _sender) -> None:
         status = compute_status(self._sessions)
@@ -98,6 +194,20 @@ class TrayApp(rumps.App):
         self._start_item.set_callback(self._on_start if status != Status.RUNNING else None)
         self._stop_item.set_callback(self._on_stop if status != Status.STOPPED else None)
 
+        self._device_help_url = _device_help_url(status, state)
+        device_active = self._device_help_url is not None
+        self._copy_link_item.set_callback(
+            self._on_copy_device_link if device_active else None
+        )
+        self._open_page_item.set_callback(
+            self._on_open_device_page if device_active else None
+        )
+
+        self._warnings_tick += 1
+        if self._warnings_tick >= _WARNINGS_REFRESH_TICKS:
+            self._warnings_tick = 0
+            self._schedule_warnings_recompute()
+
     def _on_start(self, _sender) -> None:
         self._invoke_cli(["record", "start", "--json"])
         self._refresh(None)
@@ -111,6 +221,24 @@ class TrayApp(rumps.App):
         if status in (Status.RUNNING, Status.CRASHED):
             self._invoke_cli(["record", "stop", "--json"])
         rumps.quit_application()
+
+    def _on_copy_device_link(self, _sender) -> None:
+        url = self._device_help_url
+        if not url:
+            return
+        try:
+            proc = subprocess.run(["pbcopy"], input=url, text=True, check=False)
+        except FileNotFoundError:
+            rumps.alert("mitm-tracker", "pbcopy not found")
+            return
+        if proc.returncode == 0:
+            rumps.notification("mitm-tracker", "Device setup link copied", url)
+
+    def _on_open_device_page(self, _sender) -> None:
+        url = self._device_help_url
+        if not url:
+            return
+        subprocess.run(["open", url], check=False)
 
     def _on_open_captures(self, _sender) -> None:
         path = self._workspace.captures_dir
@@ -159,10 +287,45 @@ def _default_runner(cmd: list[str], cwd: str) -> subprocess.CompletedProcess:
     )
 
 
+def _build_warnings_snapshot() -> tuple[str, list[tuple[str, str]]]:
+    try:
+        results = doctor.run_all_checks()
+    except Exception as exc:
+        return "Warnings (?)", [("Could not run checks", str(exc))]
+    blocking = [
+        r for r in results if r.status in (doctor.STATUS_WARN, doctor.STATUS_ERROR)
+    ]
+    if not blocking:
+        return "Warnings (none)", [("No warnings", "everything looks healthy")]
+    snapshot = [
+        (f"{_STATUS_GLYPH.get(r.status, '')} {r.name}".strip(), r.detail)
+        for r in blocking
+    ]
+    return f"Warnings ({len(blocking)})", snapshot
+
+
+def _is_lan_session(state: dict) -> bool:
+    return state.get("listen_host") in ("0.0.0.0", "::")
+
+
+def _device_help_url(status: Status, state: dict) -> str | None:
+    if status is not Status.RUNNING:
+        return None
+    if not _is_lan_session(state):
+        return None
+    lan_ip = state.get("lan_ip")
+    help_port = state.get("help_port")
+    if not lan_ip or not help_port:
+        return None
+    return f"http://{lan_ip}:{help_port}/"
+
+
 def _format_status_line(status: Status, state: dict) -> str:
     if status is Status.RUNNING:
         pid = state.get("pid")
         port = state.get("port")
+        if _is_lan_session(state) and state.get("lan_ip"):
+            return f"Status: Running (device LAN {state['lan_ip']}:{port})"
         return f"Status: Running (PID {pid}, port {port})"
     if status is Status.CRASHED:
         pid = state.get("pid")
