@@ -69,9 +69,19 @@ def client_config(keyfile: Path, *, endpoint_host: str, endpoint_port: int) -> W
 def qr_svg(conf_text: str) -> str:
     import segno
 
-    qr = segno.make(conf_text, error="m")
+    qr = segno.make(conf_text, error="l")
     buffer = io.BytesIO()
-    qr.save(buffer, kind="svg", scale=5, border=2, dark="#1d1d1f", light="#ffffff")
+    qr.save(
+        buffer,
+        kind="svg",
+        scale=10,
+        border=4,
+        dark="#000000",
+        light="#ffffff",
+        unit="px",
+        svgclass=None,
+        lineclass=None,
+    )
     return buffer.getvalue().decode("utf-8")
 
 
