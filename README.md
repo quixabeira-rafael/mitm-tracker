@@ -193,6 +193,56 @@ mitm-tracker record stop
 
 ---
 
+## Using a physical iPhone or iPad
+
+`mitm-tracker device start` makes the proxy reachable on your local network so a
+real iOS device on the same Wi-Fi can route through it. Unlike `record start`,
+it binds the proxy to the LAN (`0.0.0.0`) and **does not touch this Mac's own
+system proxy** — the iPhone is the client, your Mac is untouched. It also serves
+a small setup page (default port `8888`) with the certificate download. The proxy
+and the setup page are a single unit: they start together and stop together.
+
+```bash
+# 1. (Optional) pick a profile and add the hosts you want to TLS-decrypt.
+cd /path/to/the/app/repo
+mitm-tracker ssl add "*.api.example.com"
+
+# 2. Start the LAN proxy + setup page. Prints the IP:port to enter on the phone.
+mitm-tracker device start
+#   Proxy:    192.168.1.44:8080
+#   Help page: http://192.168.1.44:8888/
+#   (both run in the background; the command returns immediately)
+```
+
+On the **iPhone/iPad** (same Wi-Fi):
+
+1. **Point Wi-Fi at the proxy.** Settings → Wi-Fi → tap your network → Configure
+   Proxy → Manual. Enter the Server and Port shown above, then Save.
+2. **Download & install the certificate.** Open the help-page URL (or
+   `http://mitm.it`) in Safari and tap *Download certificate profile*. iOS shows
+   “Profile Downloaded”. Open Settings → General → VPN & Device Management → tap
+   the *mitm-tracker CA* profile → Install (passcode, Install twice).
+3. **Enable full trust.** Settings → General → About → Certificate Trust
+   Settings → turn ON full trust for the mitmproxy certificate. iOS does **not**
+   do this automatically for manually installed roots — this step is required
+   for HTTPS decryption to work.
+
+Captured flows accumulate in `.mitm-tracker/captures/` exactly as with the
+simulator workflow; inspect them with `mitm-tracker query …`. Stop with
+`mitm-tracker device stop` (or from the tray) — this tears down both the proxy
+and the setup page together. Run `mitm-tracker doctor` to assess the LAN
+address, firewall, and whether the proxy is actually bound to the network.
+
+If the tray indicator is running, a LAN/device session shows its reachable
+address in the status line and adds **Copy device setup link** and **Open device
+setup page** menu items.
+
+> The setup page also shows best-effort “Open Settings” shortcuts. Apple
+> restricts Settings deeplinks from Safari, so on iOS 17+ they may do nothing —
+> use the written steps in that case.
+
+---
+
 ## Working directory layout
 
 `mitm-tracker` operates relative to the current working directory. The first
@@ -344,6 +394,7 @@ mitm-tracker ssl     {add,remove,list}
 mitm-tracker maplocal {add,from-flow,list,show,edit,enable,disable,remove}
 mitm-tracker cert    {install,status,simulators}
 mitm-tracker record  {start,stop,status,logs}
+mitm-tracker device  {start,status,stop}            # Proxy a physical iOS device over the LAN + serve its cert
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
 mitm-tracker tray    {run,install,uninstall,status}  # macOS menu bar indicator (extra: [tray])

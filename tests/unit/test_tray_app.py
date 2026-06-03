@@ -232,3 +232,107 @@ def test_format_status_line_crashed_mentions_pid(tmp_path: Path, fake_rumps) -> 
 
     assert "9999" in line
     assert "Crashed" in line
+
+
+def test_format_status_line_shows_device_lan(tmp_path: Path, fake_rumps) -> None:
+    from mitm_tracker.tray_app import Status, _format_status_line
+
+    line = _format_status_line(
+        Status.RUNNING,
+        {"pid": 1234, "port": 8080, "listen_host": "0.0.0.0", "lan_ip": "192.168.1.7"},
+    )
+
+    assert "192.168.1.7" in line
+    assert "8080" in line
+    assert "device" in line.lower()
+
+
+def test_device_help_url_only_for_lan_session(tmp_path: Path, fake_rumps) -> None:
+    from mitm_tracker.tray_app import Status, _device_help_url
+
+    lan_state = {
+        "listen_host": "0.0.0.0",
+        "lan_ip": "192.168.1.7",
+        "help_port": 8888,
+    }
+    assert _device_help_url(Status.RUNNING, lan_state) == "http://192.168.1.7:8888/"
+    assert _device_help_url(Status.STOPPED, lan_state) is None
+    assert (
+        _device_help_url(Status.RUNNING, {"listen_host": "127.0.0.1", "port": 8080})
+        is None
+    )
+
+
+def test_warnings_submenu_lists_warnings_non_actionable(tmp_path: Path, monkeypatch) -> None:
+    rumps = pytest.importorskip("rumps")
+    monkeypatch.delitem(sys.modules, "mitm_tracker.tray_app", raising=False)
+    import mitm_tracker.tray_app as tray_app
+    from mitm_tracker import doctor
+
+    fake_results = [
+        doctor.CheckResult(name="Alpha", status=doctor.STATUS_OK, detail="fine"),
+        doctor.CheckResult(name="Beta", status=doctor.STATUS_WARN, detail="be careful"),
+        doctor.CheckResult(name="Gamma", status=doctor.STATUS_ERROR, detail="broken"),
+    ]
+    monkeypatch.setattr(tray_app.doctor, "run_all_checks", lambda: fake_results)
+
+    ws = Workspace(root=tmp_path)
+    ws.ensure()
+    app = tray_app.TrayApp(ws)
+
+    assert "(2)" in app._warnings_item.title
+    children = list(app._warnings_item.values())
+    titles = [c.title for c in children]
+    assert any("Beta" in t for t in titles)
+    assert any("be careful" in t for t in titles)
+    assert any("Gamma" in t for t in titles)
+    assert all(c._menuitem.action() is None for c in children)
+    assert not any("Alpha" in t for t in titles)
+
+
+def test_warnings_submenu_none_when_clean(tmp_path: Path, monkeypatch) -> None:
+    rumps = pytest.importorskip("rumps")
+    monkeypatch.delitem(sys.modules, "mitm_tracker.tray_app", raising=False)
+    import mitm_tracker.tray_app as tray_app
+    from mitm_tracker import doctor
+
+    monkeypatch.setattr(
+        tray_app.doctor,
+        "run_all_checks",
+        lambda: [doctor.CheckResult(name="Alpha", status=doctor.STATUS_OK, detail="fine")],
+    )
+
+    ws = Workspace(root=tmp_path)
+    ws.ensure()
+    app = tray_app.TrayApp(ws)
+
+    assert "none" in app._warnings_item.title.lower()
+
+
+def test_warnings_submenu_no_duplication_on_reopen(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("rumps")
+    monkeypatch.delitem(sys.modules, "mitm_tracker.tray_app", raising=False)
+    import mitm_tracker.tray_app as tray_app
+    from mitm_tracker import doctor
+
+    monkeypatch.setattr(
+        tray_app.doctor,
+        "run_all_checks",
+        lambda: [
+            doctor.CheckResult(name="Beta", status=doctor.STATUS_WARN, detail="careful"),
+            doctor.CheckResult(name="Gamma", status=doctor.STATUS_ERROR, detail="broken"),
+        ],
+    )
+
+    ws = Workspace(root=tmp_path)
+    ws.ensure()
+    app = tray_app.TrayApp(ws)
+
+    baseline = len(list(app._warnings_item.values()))
+    assert baseline == 4
+    for _ in range(5):
+        app._render_warnings()
+    assert len(list(app._warnings_item.values())) == baseline
+    app._compute_warnings_snapshot()
+    app._render_warnings()
+    assert len(list(app._warnings_item.values())) == baseline

@@ -6,6 +6,7 @@ import sys
 
 from mitm_tracker import __version__
 from mitm_tracker.commands import cert as cert_commands
+from mitm_tracker.commands import device as device_commands
 from mitm_tracker.commands import doctor as doctor_commands
 from mitm_tracker.commands import maplocal as maplocal_commands
 from mitm_tracker.commands import profile as profile_commands
@@ -32,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     maplocal_commands.register(subparsers)
     cert_commands.register(subparsers)
     record_commands.register(subparsers)
+    device_commands.register(subparsers)
+    device_commands.register_internal(subparsers)
     query_commands.register(subparsers)
     release_commands.register(subparsers)
     tray_commands.register(subparsers)

@@ -618,6 +618,122 @@ def check_booted_simulators() -> CheckResult:
     )
 
 
+def check_lan_proxy() -> CheckResult:
+    ws = workspace_for()
+    if not ws.base.exists():
+        return CheckResult(
+            name="LAN proxy (device)",
+            status=STATUS_INFO,
+            detail="no workspace in cwd",
+            group="state",
+        )
+    sm = SessionManager(ws)
+    try:
+        state = sm.read_state()
+        running = sm.is_running()
+    except Exception as exc:
+        return CheckResult(
+            name="LAN proxy (device)",
+            status=STATUS_WARN,
+            detail=f"could not read state: {exc}",
+            group="state",
+        )
+    listen_host = state.get("listen_host")
+    lan_bound = listen_host in ("0.0.0.0", "::")
+    if not running:
+        return CheckResult(
+            name="LAN proxy (device)",
+            status=STATUS_INFO,
+            detail="no LAN session running (start one with `mitm-tracker device start`)",
+            group="state",
+        )
+    if not lan_bound:
+        return CheckResult(
+            name="LAN proxy (device)",
+            status=STATUS_INFO,
+            detail=(
+                f"proxy running but bound to {listen_host or '127.0.0.1'} (loopback); "
+                "physical devices cannot reach it"
+            ),
+            fix="mitm-tracker device start   # binds to the LAN for physical devices",
+            group="state",
+        )
+    return CheckResult(
+        name="LAN proxy (device)",
+        status=STATUS_OK,
+        detail=f"listening on {listen_host}:{state.get('port')} for physical devices",
+        group="state",
+    )
+
+
+def check_lan_reachable() -> CheckResult:
+    from mitm_tracker import net_info
+
+    try:
+        address = net_info.lan_address()
+    except Exception as exc:
+        return CheckResult(
+            name="LAN address",
+            status=STATUS_INFO,
+            detail=f"could not determine LAN IP: {exc}",
+            group="state",
+        )
+    if address.ip is None:
+        return CheckResult(
+            name="LAN address",
+            status=STATUS_WARN,
+            detail="no LAN IP detected; physical devices have nothing to point at",
+            fix="connect this Mac to Wi-Fi or Ethernet",
+            group="state",
+        )
+    return CheckResult(
+        name="LAN address",
+        status=STATUS_INFO,
+        detail=f"{address.ip} (via {address.source}, service: {address.service or '-'})",
+        group="state",
+    )
+
+
+_FIREWALL_BIN = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+
+
+def check_firewall() -> CheckResult:
+    if not Path(_FIREWALL_BIN).exists():
+        return CheckResult(
+            name="macOS firewall",
+            status=STATUS_INFO,
+            detail="socketfilterfw not found; cannot assess",
+            group="state",
+        )
+    try:
+        proc = _run([_FIREWALL_BIN, "--getglobalstate"])
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return CheckResult(
+            name="macOS firewall",
+            status=STATUS_INFO,
+            detail="could not query firewall state",
+            group="state",
+        )
+    out = (proc.stdout or "").lower()
+    if "disabled" in out:
+        return CheckResult(
+            name="macOS firewall",
+            status=STATUS_OK,
+            detail="disabled; incoming proxy connections from devices are allowed",
+            group="state",
+        )
+    return CheckResult(
+        name="macOS firewall",
+        status=STATUS_WARN,
+        detail=(
+            "enabled; it may block incoming connections from a physical device to the proxy"
+        ),
+        fix="if a device cannot connect, allow incoming connections for python/mitmdump "
+        "in System Settings > Network > Firewall",
+        group="state",
+    )
+
+
 # --- Orchestration ------------------------------------------------------------
 
 
@@ -639,6 +755,9 @@ def run_all_checks() -> list[CheckResult]:
         check_active_profile_ssl_list(),
         check_record_session(),
         check_vpn_active(),
+        check_lan_proxy(),
+        check_lan_reachable(),
+        check_firewall(),
         check_mitmproxy_ca(),
         check_booted_simulators(),
     ]
