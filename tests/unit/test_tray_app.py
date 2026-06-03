@@ -281,13 +281,20 @@ def test_warnings_submenu_lists_warnings_non_actionable(tmp_path: Path, monkeypa
     app = tray_app.TrayApp(ws)
 
     assert "(2)" in app._warnings_item.title
-    children = list(app._warnings_item.values())
-    titles = [c.title for c in children]
+    items = [c for c in app._warnings_item.values() if hasattr(c, "title")]
+    titles = [c.title for c in items]
+
+    assert titles[0] == "Refresh warnings"
+    refresh = items[0]
+    assert refresh._menuitem.action() is not None
+
     assert any("Beta" in t for t in titles)
     assert any("be careful" in t for t in titles)
     assert any("Gamma" in t for t in titles)
-    assert all(c._menuitem.action() is None for c in children)
     assert not any("Alpha" in t for t in titles)
+
+    warning_items = items[1:]
+    assert all(c._menuitem.action() is None for c in warning_items)
 
 
 def test_warnings_submenu_none_when_clean(tmp_path: Path, monkeypatch) -> None:
@@ -328,11 +335,19 @@ def test_warnings_submenu_no_duplication_on_reopen(tmp_path: Path, monkeypatch) 
     ws.ensure()
     app = tray_app.TrayApp(ws)
 
+    def refresh_count() -> int:
+        return sum(
+            1
+            for c in app._warnings_item.values()
+            if hasattr(c, "title") and c.title == "Refresh warnings"
+        )
+
     baseline = len(list(app._warnings_item.values()))
-    assert baseline == 4
+    assert refresh_count() == 1
     for _ in range(5):
         app._render_warnings()
     assert len(list(app._warnings_item.values())) == baseline
-    app._compute_warnings_snapshot()
-    app._render_warnings()
+    assert refresh_count() == 1
+    app._on_refresh_warnings(None)
     assert len(list(app._warnings_item.values())) == baseline
+    assert refresh_count() == 1
