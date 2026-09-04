@@ -6,7 +6,9 @@ from typing import Sequence
 
 import pytest
 
+from mitm_tracker import instance
 from mitm_tracker import session_manager as session_module
+from mitm_tracker import tray_launch_agent
 from mitm_tracker.cli import main
 from mitm_tracker.commands import record as record_module
 from mitm_tracker.config import workspace_for
@@ -27,6 +29,7 @@ class FakeProcess:
 def patched_environment(tmp_repo: Path, monkeypatch):
     monkeypatch.setattr(record_module, "_find_mitmdump", lambda: "/usr/bin/mitmdump")
     monkeypatch.setattr(session_module, "_default_pid_alive", lambda pid: True)
+    monkeypatch.setattr(instance, "pid_alive", lambda pid: True)
 
     captured_cmd: list[list[str]] = []
 
@@ -35,6 +38,14 @@ def patched_environment(tmp_repo: Path, monkeypatch):
         return FakeProcess(pid=4242)
 
     monkeypatch.setattr(record_module, "_spawn_default", fake_spawn)
+
+    tray_spawns: list[list[str]] = []
+
+    def fake_tray_spawn(cmd, **kwargs):
+        tray_spawns.append(list(cmd))
+        return FakeProcess(pid=4343)
+
+    monkeypatch.setattr(record_module, "_spawn_tray", fake_tray_spawn)
 
     runner_calls: list[list[str]] = []
 
@@ -73,6 +84,7 @@ def patched_environment(tmp_repo: Path, monkeypatch):
         "captured_cmd": captured_cmd,
         "runner_calls": runner_calls,
         "privileged_invocations": privileged_invocations,
+        "tray_spawns": tray_spawns,
         "tmp_repo": tmp_repo,
     }
 
@@ -441,3 +453,76 @@ def test_stop_terminates_both_proxy_and_help_pids(tmp_repo: Path, monkeypatch, c
     # Both the proxy pid and the help-server pid must receive a signal.
     assert 1111 in killed
     assert 2222 in killed
+
+
+def test_start_registers_a_machine_wide_instance(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    rc = main(["record", "start", "--port", "8123", "--json"])
+    capsys.readouterr()
+    assert rc == EXIT_OK
+
+    current = instance.live(instance.KIND_PROXY, alive=lambda pid: True)
+    assert current is not None
+    assert current.pid == 4242
+    assert current.port == 8123
+    assert current.workspace == tmp_repo.resolve()
+
+
+def test_start_refuses_when_another_workspace_owns_the_proxy(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    other = tmp_repo / "other-project"
+    other.mkdir()
+    instance.acquire(
+        instance.KIND_PROXY, pid=7777, workspace=other, port=8080, alive=lambda pid: True
+    )
+
+    rc = main(["record", "start", "--port", "8123", "--json"])
+    err = capsys.readouterr().err
+    assert rc == EXIT_INVALID_STATE
+    assert "already_running" in err
+    assert str(other) in err
+    assert patched_environment["captured_cmd"] == []
+
+
+def test_stop_releases_the_machine_wide_instance(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    main(["record", "start", "--port", "8123", "--json"])
+    capsys.readouterr()
+
+    rc = main(["record", "stop", "--json"])
+    capsys.readouterr()
+    assert rc == EXIT_OK
+    assert instance.live(instance.KIND_PROXY, alive=lambda pid: True) is None
+
+
+def test_start_opens_the_tray(patched_environment, capsys, tmp_repo: Path) -> None:
+    rc = main(["record", "start", "--port", "8123", "--json"])
+    capsys.readouterr()
+    assert rc == EXIT_OK
+    assert patched_environment["tray_spawns"] == [
+        [str(tray_launch_agent.resolve_binary()), "tray", "run"]
+    ]
+
+
+def test_start_skips_the_tray_with_no_tray(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    rc = main(["record", "start", "--port", "8123", "--no-tray", "--json"])
+    capsys.readouterr()
+    assert rc == EXIT_OK
+    assert patched_environment["tray_spawns"] == []
+
+
+def test_start_does_not_open_a_second_tray(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    instance.acquire(
+        instance.KIND_TRAY, pid=8888, workspace=tmp_repo, alive=lambda pid: True
+    )
+    rc = main(["record", "start", "--port", "8123", "--json"])
+    capsys.readouterr()
+    assert rc == EXIT_OK
+    assert patched_environment["tray_spawns"] == []

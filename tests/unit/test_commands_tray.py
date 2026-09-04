@@ -8,9 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from mitm_tracker import instance
 from mitm_tracker import tray_launch_agent as tla
 from mitm_tracker.commands import tray as tray_commands
-from mitm_tracker.config import Workspace
+from mitm_tracker.config import Workspace, workspace_for
 from mitm_tracker.output import EXIT_INVALID_STATE, EXIT_OK, EXIT_SYSTEM
 
 
@@ -174,3 +175,54 @@ def test_cmd_status(tmp_path: Path, capsys) -> None:
     assert payload["installed"] is True
     assert payload["loaded"] is True
     assert payload["pid"] == 12345
+
+
+def test_cmd_run_refuses_a_second_tray(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(instance, "pid_alive", lambda pid: True)
+    instance.acquire(instance.KIND_TRAY, pid=8888, workspace=tmp_path)
+
+    rc = tray_commands.cmd_run(_run_args())
+
+    assert rc == EXIT_INVALID_STATE
+    err = capsys.readouterr().err
+    assert "already_running" in err
+    assert "pid=8888" in err
+
+
+def test_cmd_run_releases_the_registration_when_the_app_exits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(instance, "pid_alive", lambda pid: True)
+
+    with patch("mitm_tracker.tray_app.TrayApp") as tray_app:
+        rc = tray_commands.cmd_run(_run_args())
+
+    assert rc == EXIT_OK
+    tray_app.return_value.run.assert_called_once()
+    assert instance.live(instance.KIND_TRAY) is None
+
+
+def test_cmd_install_defaults_to_the_resolved_workspace(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    binary = tmp_path / "mitm-tracker"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    resolved = workspace_for().root
+
+    with patch.object(tla, "install") as install:
+        install.return_value = tla.InstallResult(
+            plist_path=tmp_path / "plist",
+            workspace=resolved,
+            binary=binary,
+            log_path=tmp_path / "log",
+            loaded=True,
+            replaced_existing=False,
+        )
+        rc = tray_commands.cmd_install(_install_args(binary=str(binary)))
+
+    assert rc == EXIT_OK
+    assert install.call_args.args[0] == resolved
+    assert json.loads(capsys.readouterr().out)["workspace"] == str(resolved)

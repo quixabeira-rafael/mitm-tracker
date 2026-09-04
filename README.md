@@ -265,8 +265,15 @@ done. The WireGuard key material is stored `0600` under `.mitm-tracker/runtime/`
 
 ## Working directory layout
 
-`mitm-tracker` operates relative to the current working directory. The first
-time you run a command in a repo, it creates `.mitm-tracker/`:
+`mitm-tracker` operates on one workspace per project. The workspace lives in
+the **main git repository**, so every worktree and every subdirectory of the
+project resolves to the same `.mitm-tracker/` — one SSL list, one profile set,
+one runtime state, no matter which checkout you run the command from. Outside a
+git repository, the nearest ancestor that already has a `.mitm-tracker/` wins,
+and failing that the current directory is used. `MITM_TRACKER_ROOT` overrides
+the directory resolution starts from.
+
+The first time you run a command in a project, it creates `.mitm-tracker/`:
 
 ```
 <your-repo>/.mitm-tracker/
@@ -287,6 +294,28 @@ time you run a command in a repo, it creates `.mitm-tracker/`:
 
 The active profile and active session are kept in `state.json`. Switch them
 with `profile use <name>` and `query use <session>`.
+
+### One proxy at a time
+
+The macOS system proxy and the listen port are machine-wide resources, so
+`mitm-tracker` allows a single proxy at a time. Live instances are registered
+in `~/.mitm-tracker/instances.json` (override the directory with
+`MITM_TRACKER_HOME`), and `record start` / `device start` refuse to spawn a
+second one:
+
+```bash
+$ mitm-tracker record start
+error: already_running: a mitm-tracker proxy is already running (pid=4242
+port=8080 workspace=/path/to/main-repo); stop it with `mitm-tracker record
+stop` from /path/to/main-repo before starting a new one
+```
+
+Entries whose process died are pruned automatically, so a crash never leaves
+the guard stuck. `mitm-tracker doctor` reports what is registered.
+
+Starting the proxy also opens the menu bar tray when the optional `rumps`
+dependency is installed, and never opens a second one. Pass `--no-tray` to
+skip it.
 
 ---
 
@@ -426,8 +455,14 @@ mitm-tracker tray uninstall      # disable auto-launch (stops it now too)
 mitm-tracker tray run            # ad-hoc, foreground (no LaunchAgent)
 ```
 
-The workspace path is captured at `tray install` time. To switch which
-project the tray watches, run `tray install` again from the new workspace.
+The workspace path is captured at `tray install` time and resolves to the main
+repository, so a worktree installs the same LaunchAgent as its main checkout.
+To switch which project the tray watches, run `tray install` again from the new
+project.
+
+`record start` and `device start` open the tray on their own, so `tray install`
+is only needed if you also want it on every login. A second tray is refused
+while one is already running.
 
 ---
 
@@ -438,7 +473,7 @@ mitm-tracker profile {create,use,list,show,delete}
 mitm-tracker ssl     {add,remove,list}
 mitm-tracker maplocal {add,from-flow,list,show,edit,enable,disable,remove}
 mitm-tracker cert    {install,status,simulators}
-mitm-tracker record  {start,stop,status,logs}       # --delay 800ms --delay-jitter 200ms to throttle responses
+mitm-tracker record  {start,stop,status,logs}       # --delay 800ms --delay-jitter 200ms to throttle responses, --no-tray
 mitm-tracker device  {start,status,stop}            # Physical iOS device: --transport wireguard (every app) or wifi-proxy
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
@@ -578,6 +613,7 @@ src/mitm_tracker/
 │
 ├── proxy_manager.py       # macOS networksetup wrapper, osascript prompt
 ├── session_manager.py     # state.json + PID lifecycle
+├── instance.py            # machine-wide single-instance registry (proxy, tray)
 ├── profile_manager.py     # profile CRUD and active selection
 ├── ssl_list.py            # JSON-backed SSL decryption list
 ├── maplocal.py            # JSON + body files for Map Local rules
