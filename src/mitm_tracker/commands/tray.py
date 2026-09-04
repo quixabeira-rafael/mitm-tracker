@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
-from mitm_tracker import tray_launch_agent
+from mitm_tracker import instance, tray_launch_agent
 from mitm_tracker.config import workspace_for
 from mitm_tracker.output import (
     EXIT_INVALID_STATE,
@@ -39,7 +40,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     install_p.add_argument(
         "--workspace",
-        help="Workspace path the tray should monitor (default: current working directory).",
+        help="Workspace path the tray should monitor (default: the resolved main repository).",
     )
     install_p.add_argument(
         "--binary",
@@ -83,14 +84,33 @@ def cmd_run(args: argparse.Namespace) -> int:
             exit_code=EXIT_SYSTEM,
         )
 
+    try:
+        instance.acquire(
+            instance.KIND_TRAY, pid=os.getpid(), workspace=workspace.root
+        )
+    except instance.InstanceBusyError as exc:
+        return emit_error(
+            "already_running",
+            f"a mitm-tracker tray is already running ({exc.current.describe()})",
+            json_mode=args.json_mode,
+            exit_code=EXIT_INVALID_STATE,
+        )
+
     from mitm_tracker.tray_app import TrayApp
 
-    TrayApp(workspace, interval=args.interval).run()
+    try:
+        TrayApp(workspace, interval=args.interval).run()
+    finally:
+        instance.release(instance.KIND_TRAY, pid=os.getpid())
     return EXIT_OK
 
 
 def cmd_install(args: argparse.Namespace) -> int:
-    workspace_path = Path(args.workspace).expanduser().resolve() if args.workspace else Path.cwd()
+    workspace_path = (
+        Path(args.workspace).expanduser().resolve()
+        if args.workspace
+        else workspace_for().root
+    )
     if not workspace_path.is_dir():
         return emit_error(
             "workspace_not_found",

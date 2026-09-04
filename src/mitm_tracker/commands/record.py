@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from mitm_tracker import instance, tray_launch_agent
 from mitm_tracker.config import (
     DEFAULT_LISTEN_HOST,
     DEFAULT_PROXY_PORT,
@@ -60,6 +62,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Preserve original Cache-Control headers (default: force no-cache like Charles).",
     )
     add_delay_arguments(start_p)
+    add_tray_arguments(start_p)
     start_p.add_argument("--json", action="store_true", dest="json_mode")
     start_p.set_defaults(func=cmd_start)
 
@@ -85,6 +88,14 @@ def add_delay_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--delay-jitter",
         help="Random spread around --delay, e.g. '200ms' for 800ms +/-200ms.",
+    )
+
+
+def add_tray_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-tray",
+        action="store_true",
+        help="Do not open the menu bar tray alongside the proxy.",
     )
 
 
@@ -127,10 +138,18 @@ def launch_proxy(
     proxy_mode: str = "regular",
     wireguard_keyfile: Path | None = None,
     delay: DelayProfile | None = None,
+    start_tray: bool = True,
     spawn: SpawnFn | None = None,
 ) -> ProxyLaunchResult:
     workspace = workspace_for()
     workspace.ensure()
+    busy = instance.live(instance.KIND_PROXY)
+    if busy is not None:
+        raise ProxyLaunchError(
+            "already_running",
+            _busy_message(busy),
+            exit_code=EXIT_INVALID_STATE,
+        )
     sm = SessionManager(workspace)
     pm = ProfileManager(workspace)
     profile = pm.active_name()
@@ -192,6 +211,20 @@ def launch_proxy(
         wireguard_keyfile=wireguard_keyfile,
         delay=delay_profile,
     )
+    try:
+        instance.acquire(
+            instance.KIND_PROXY,
+            pid=os.getpid(),
+            workspace=workspace.root,
+            port=port,
+        )
+    except instance.InstanceBusyError as exc:
+        raise ProxyLaunchError(
+            "already_running",
+            _busy_message(exc.current),
+            exit_code=EXIT_INVALID_STATE,
+        ) from exc
+
     log_handle = workspace.log_path.open("ab", buffering=0)
     log_handle.write(
         f"\n--- record start {_now_iso()} mode={mode} port={port} listen={listen_host} ---\n".encode()
@@ -209,6 +242,7 @@ def launch_proxy(
         )
     except Exception as exc:
         log_handle.close()
+        instance.release(instance.KIND_PROXY, pid=os.getpid())
         raise ProxyLaunchError(
             "spawn_failed",
             f"failed to spawn mitmdump: {exc}",
@@ -228,6 +262,11 @@ def launch_proxy(
         delay_jitter_ms=delay_profile.jitter_ms,
     )
     log_handle.close()
+    instance.adopt_pid(
+        instance.KIND_PROXY, expected_pid=os.getpid(), pid=process.pid
+    )
+    if start_tray:
+        ensure_tray(workspace)
 
     return ProxyLaunchResult(
         pid=state["pid"],
@@ -242,6 +281,39 @@ def launch_proxy(
         proxy_mode=proxy_mode,
         delay=delay_profile,
     )
+
+
+def _busy_message(current: instance.Instance) -> str:
+    return (
+        f"a mitm-tracker proxy is already running ({current.describe()}); "
+        f"stop it with `mitm-tracker record stop` from {current.workspace} "
+        "before starting a new one"
+    )
+
+
+def ensure_tray(workspace: Workspace, *, spawn: SpawnFn | None = None) -> int | None:
+    """Open the menu bar tray next to the proxy unless one is already up."""
+    if instance.live(instance.KIND_TRAY) is not None:
+        return None
+    if importlib.util.find_spec("rumps") is None:
+        return None
+    binary = tray_launch_agent.resolve_binary()
+    if not binary.exists():
+        return None
+    spawn_fn = spawn or _spawn_tray
+    try:
+        process = spawn_fn(
+            [str(binary), "tray", "run"],
+            cwd=str(workspace.root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError:
+        return None
+    return process.pid
 
 
 def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
@@ -274,6 +346,7 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
             keep_cache=args.keep_cache,
             configure_system_proxy=not args.no_system_proxy,
             delay=delay,
+            start_tray=not getattr(args, "no_tray", False),
             spawn=spawn,
         )
     except ProxyLaunchError as exc:
@@ -359,6 +432,7 @@ def cmd_stop(args: argparse.Namespace, *, kill: Callable[[int, int], None] | Non
         backup_path.unlink()
 
     sm.clear_pid()
+    instance.release(instance.KIND_PROXY)
     final_state = sm.stop()
 
     payload = {
@@ -546,6 +620,10 @@ def _now_iso() -> str:
 
 
 def _spawn_default(cmd, **kwargs) -> subprocess.Popen:
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def _spawn_tray(cmd, **kwargs) -> subprocess.Popen:
     return subprocess.Popen(cmd, **kwargs)
 
 

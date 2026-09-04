@@ -522,3 +522,72 @@ def test_check_lan_proxy_info_when_not_running(tmp_repo) -> None:
     workspace_for().ensure()
     result = doctor.check_lan_proxy()
     assert result.status == doctor.STATUS_INFO
+
+
+def test_check_workspace_info_when_cwd_is_the_root(tmp_repo) -> None:
+    from mitm_tracker.config import workspace_for
+
+    workspace_for().ensure()
+    result = doctor.check_workspace()
+    assert result.status == doctor.STATUS_INFO
+    assert result.fix is None
+
+
+def test_check_workspace_warns_about_a_leftover_worktree_workspace(
+    tmp_path, monkeypatch
+) -> None:
+    import subprocess
+
+    def git(cwd, *args):
+        subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
+
+    main = tmp_path / "main"
+    main.mkdir()
+    git(main, "init", "-q")
+    git(main, "config", "user.email", "test@example.com")
+    git(main, "config", "user.name", "test")
+    (main / "README.md").write_text("hello\n", encoding="utf-8")
+    git(main, "add", "README.md")
+    git(main, "commit", "-qm", "init")
+    worktree = tmp_path / "wt"
+    git(main, "worktree", "add", "-q", "-b", "feature", str(worktree))
+    (main / ".mitm-tracker").mkdir()
+    (worktree / ".mitm-tracker").mkdir()
+    monkeypatch.chdir(worktree)
+
+    result = doctor.check_workspace()
+    assert result.status == doctor.STATUS_WARN
+    assert str(worktree.resolve() / ".mitm-tracker") in result.detail
+    assert result.fix
+
+
+def test_check_single_instance_info_when_nothing_runs(tmp_repo) -> None:
+    result = doctor.check_single_instance()
+    assert result.status == doctor.STATUS_INFO
+    assert "none registered" in result.detail
+
+
+def test_check_single_instance_ok_for_this_workspace(tmp_repo, monkeypatch) -> None:
+    from mitm_tracker import instance
+
+    monkeypatch.setattr(instance, "pid_alive", lambda pid: True)
+    instance.acquire(instance.KIND_PROXY, pid=4242, workspace=tmp_repo, port=8080)
+
+    result = doctor.check_single_instance()
+    assert result.status == doctor.STATUS_OK
+    assert "pid=4242" in result.detail
+
+
+def test_check_single_instance_warns_when_another_workspace_owns_it(
+    tmp_repo, monkeypatch
+) -> None:
+    from mitm_tracker import instance
+
+    other = tmp_repo / "other"
+    other.mkdir()
+    monkeypatch.setattr(instance, "pid_alive", lambda pid: True)
+    instance.acquire(instance.KIND_PROXY, pid=4242, workspace=other, port=8080)
+
+    result = doctor.check_single_instance()
+    assert result.status == doctor.STATUS_WARN
+    assert str(other) in result.fix

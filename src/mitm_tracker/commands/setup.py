@@ -127,7 +127,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     install_p.add_argument(
         "--workspace",
-        help="Workspace path the tray should monitor (default: current working directory).",
+        help="Workspace path the tray should monitor (default: the resolved main repository).",
     )
     install_p.add_argument("--skip-touch-id", action="store_true")
     install_p.add_argument("--skip-sudo-cache", action="store_true")
@@ -180,7 +180,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         workspace_path = (
             Path(args.workspace).expanduser().resolve()
             if args.workspace
-            else Path.cwd()
+            else workspace_for().root
         )
         if not workspace_path.is_dir():
             return emit_error(

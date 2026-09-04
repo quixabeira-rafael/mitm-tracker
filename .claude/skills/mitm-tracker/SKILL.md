@@ -9,9 +9,9 @@ CLI on top of `mitmproxy` that captures HTTP(S) flows into per-session SQLite, s
 
 ## Mental model (read first)
 
-Seven facts that are not obvious from `--help`:
+Eight facts that are not obvious from `--help`:
 
-1. **Workspace is the cwd.** `mitm-tracker` resolves `.mitm-tracker/` from `Path.cwd()` with **no walk-up**. Running `query recent` from a subdirectory of a project that has a workspace at the root will silently create a fresh empty workspace there. Always `cd` to the project root that owns the running session before invoking any command. If the user runs a command and gets `no record sessions found` despite a session being active, this is almost always the cause.
+1. **One workspace per project, owned by the main repository.** `mitm-tracker` resolves `.mitm-tracker/` from `git rev-parse --git-common-dir`, so a worktree, a subdirectory, and the main checkout all share the same SSL list, profiles, and `state.json`. Outside a git repo it falls back to the nearest ancestor that already has a `.mitm-tracker/`, then to the cwd. `MITM_TRACKER_ROOT` overrides where resolution starts. You no longer need to `cd` to the project root, and a worktree can no longer strand its own empty workspace — but a leftover `.mitm-tracker/` from before this behavior is now ignored, and `doctor` warns about it.
 
 2. **`record start` daemonizes.** It spawns `mitmdump` with `start_new_session=True`, returns immediately, and the proxy keeps running across terminal closes, ssh disconnects, etc. Only `record stop`, `kill <pid>`, or a Mac reboot stops it. After a crash the macOS proxy may stay pointed at `127.0.0.1:8080` with nothing listening — `record stop` cleans that up.
 
@@ -23,7 +23,9 @@ Seven facts that are not obvious from `--help`:
 
 6. **The response delay is fixed for the life of a session.** `--delay`/`--delay-jitter` become `mitmdump` options at spawn time, so they do **not** hot-reload like Map Local rules. Changing the throttle means `record stop && record start --delay ...`. The delay is session-wide (every response, upstream and mocked alike) and latency-only — there is no bandwidth cap, no per-host and no per-rule delay. It also inflates `duration_total_ms` in the capture DB, so subtract the configured delay when reading timings from a throttled session.
 
-7. **Decrypting HTTPS from the Mac host requires a separate, more dangerous step.** `mitm-tracker cert install` only trusts the CA inside iOS Simulators. To intercept Safari / native apps / OS processes you must run `mitm-tracker cert host install` — this trusts the mitmproxy CA system-wide on the Mac, for ALL TLS connections (App Store, OS updates, everything). Always reverse it with `mitm-tracker cert host uninstall` when done. The matching private key at `~/.mitmproxy/mitmproxy-ca.pem` becomes a high-value file while host trust is active. The command auto-replaces stale managed CAs (handles the regen scenario from #5), only removes what we installed at uninstall time, and runs `security verify-cert -p ssl` to confirm the trust setting actually took effect.
+7. **Only one proxy runs on the machine.** The system proxy and the listen port are machine-wide, so live instances are registered in `~/.mitm-tracker/instances.json` (`MITM_TRACKER_HOME` overrides the directory) and `record start` / `device start` fail with `already_running` when one is up — including one started from another project. The error names the owning workspace; stop it from there with `record stop`. Dead PIDs are pruned automatically, so a crash never wedges the guard. Starting the proxy also opens the tray (when the `[tray]` extra is installed) and never opens a second one; `--no-tray` skips it.
+
+8. **Decrypting HTTPS from the Mac host requires a separate, more dangerous step.** `mitm-tracker cert install` only trusts the CA inside iOS Simulators. To intercept Safari / native apps / OS processes you must run `mitm-tracker cert host install` — this trusts the mitmproxy CA system-wide on the Mac, for ALL TLS connections (App Store, OS updates, everything). Always reverse it with `mitm-tracker cert host uninstall` when done. The matching private key at `~/.mitmproxy/mitmproxy-ca.pem` becomes a high-value file while host trust is active. The command auto-replaces stale managed CAs (handles the regen scenario from #5), only removes what we installed at uninstall time, and runs `security verify-cert -p ssl` to confirm the trust setting actually took effect.
 
 ## When to invoke this skill
 
@@ -159,7 +161,8 @@ Other actions:
 - `mitm-tracker tray status` — print install/load state, current PID, watched workspace
 - `mitm-tracker tray uninstall` — remove the LaunchAgent (disables auto-launch)
 - `mitm-tracker tray run` — open foreground without registering a LaunchAgent
-- To switch the watched workspace: `cd <new-repo> && mitm-tracker tray install` (replaces the existing plist)
+- To switch the watched workspace: `cd <new-repo> && mitm-tracker tray install` (replaces the existing plist; the path resolves to that project's main repository)
+- A second tray is refused while one is running; `record start`/`device start` open it for you
 
 ## Command reference
 
@@ -170,7 +173,7 @@ Other actions:
 | `maplocal {add,from-flow,list,show,edit,enable,disable,remove}` | Local response overrides | `from-flow <seq>` clones a captured response |
 | `cert {install,status,simulators}` | Install mitmproxy CA into booted simulator(s) | iOS 26 uses `TrustStore.sqlite3` (sha256); legacy keychain (sha1) still supported |
 | `cert host {install,uninstall,status}` | Trust the mitmproxy CA system-wide on the Mac (DANGEROUS) | Run `--yes` to skip the confirmation banner, `--force` to re-run when previous attempt left trust missing. Always reverse with `cert host uninstall` |
-| `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080; `--delay 800ms` + `--delay-jitter 200ms` to throttle every response (session-wide, needs a restart to change) |
+| `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080; `--delay 800ms` + `--delay-jitter 200ms` to throttle every response (session-wide, needs a restart to change); `--no-tray` to not open the menu bar tray |
 | `device {start,status,stop}` | Physical iOS device: route over the LAN + serve cert/setup page | `--transport wireguard` (every app, incl. QUIC; device needs the WireGuard app) or `wifi-proxy` (Safari/proxy-aware only). Binds to `0.0.0.0`, leaves the Mac's own proxy untouched. Daemonizes proxy + setup page; `device stop`/`record stop`/tray stop both. `--help-port N` (8888), `--wireguard-port N` (51820). `--delay`/`--delay-jitter` as in `record start`. Same session/state as `record` |
 | `query {recent,failures,slow,hosts,show,sql,curl,sessions,use}` | Inspect captured flows | `--json` on every subcommand; `query use <session>` switches active DB |
 | `release [--older-than 24h] [--dry-run]` | Delete stale capture databases | `--no-keep-active` to allow deleting the active one |
@@ -197,7 +200,8 @@ Run `mitm-tracker doctor` first. It tells you exactly what's missing and gives t
 
 ## Gotchas checklist
 
-- **`no record sessions found`** → wrong cwd. `cd` to the project root that owns the workspace.
+- **`no record sessions found`** → the resolved workspace has no captures. Check `mitm-tracker doctor` (Workspace row) to see which root is in use; a `.mitm-tracker/` left behind in a worktree is now ignored, and its old captures live there.
+- **`already_running`** → a proxy is up somewhere else on this machine. The message names its pid, port, and workspace; run `mitm-tracker record stop` from that workspace. `mitm-tracker doctor` (Running instances row) shows the same thing.
 - **HTTPS host shows up as `CONNECT` only, no path/body** → host not in the active profile's SSL list, or SSL list was edited without restarting record.
 - **App still serves cached responses after a Map Local change** → ensure record was started without `--keep-cache` (the default strips cache). Force-quitting the app is rarely needed because the addon neutralizes `Cache-Control`/`ETag`/`Last-Modified`/conditional headers.
 - **`record status` shows `running: false, crashed: true`** → daemon died but proxy state is dirty. Run `record stop` to clean up before `record start`.

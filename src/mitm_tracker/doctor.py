@@ -8,8 +8,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mitm_tracker import auth_setup, claude_skill, host_ca, tray_launch_agent
-from mitm_tracker.config import workspace_for
+from mitm_tracker import auth_setup, claude_skill, host_ca, instance, tray_launch_agent
+from mitm_tracker.config import WORKSPACE_DIRNAME, workspace_for
 from mitm_tracker.profile_manager import ProfileError, ProfileManager
 from mitm_tracker.session_manager import SessionManager
 from mitm_tracker.ssl_list import SslList
@@ -377,7 +377,7 @@ def check_active_profile_ssl_list() -> CheckResult:
         return CheckResult(
             name="Active profile SSL list",
             status=STATUS_INFO,
-            detail="no workspace in cwd",
+            detail=f"no workspace yet at {ws.base}",
             group="state",
         )
     pm = ProfileManager(ws)
@@ -410,17 +410,64 @@ def check_active_profile_ssl_list() -> CheckResult:
 
 def check_workspace() -> CheckResult:
     ws = workspace_for()
+    cwd = Path.cwd().resolve()
+    stray = cwd != ws.root and (cwd / WORKSPACE_DIRNAME).is_dir()
+    if stray:
+        return CheckResult(
+            name="Workspace",
+            status=STATUS_WARN,
+            detail=(
+                f"{ws.base} is in use, but this checkout also has a leftover "
+                f"{cwd / WORKSPACE_DIRNAME} that is now ignored"
+            ),
+            fix=f"rm -rf {cwd / WORKSPACE_DIRNAME}   # after copying anything you still need",
+            group="state",
+        )
+    suffix = "" if cwd == ws.root else f" (shared from {cwd})"
     if ws.base.exists():
         return CheckResult(
             name="Workspace",
             status=STATUS_INFO,
-            detail=str(ws.base),
+            detail=f"{ws.base}{suffix}",
             group="state",
         )
     return CheckResult(
         name="Workspace",
         status=STATUS_INFO,
-        detail=f"no workspace at {ws.base} (will be created on first record start)",
+        detail=f"no workspace at {ws.base} (will be created on first record start){suffix}",
+        group="state",
+    )
+
+
+def check_single_instance() -> CheckResult:
+    proxy = instance.live(instance.KIND_PROXY)
+    tray = instance.live(instance.KIND_TRAY)
+    if proxy is None and tray is None:
+        return CheckResult(
+            name="Running instances",
+            status=STATUS_INFO,
+            detail=f"none registered in {instance.registry_path()}",
+            group="state",
+        )
+    parts = []
+    if proxy is not None:
+        parts.append(f"proxy {proxy.describe()}")
+    if tray is not None:
+        parts.append(f"tray {tray.describe()}")
+    detail = "; ".join(parts)
+    ws = workspace_for()
+    if proxy is not None and proxy.workspace != ws.root:
+        return CheckResult(
+            name="Running instances",
+            status=STATUS_WARN,
+            detail=f"{detail} — the proxy belongs to another workspace, so record start here will refuse",
+            fix=f"mitm-tracker record stop   # run it from {proxy.workspace}",
+            group="state",
+        )
+    return CheckResult(
+        name="Running instances",
+        status=STATUS_OK,
+        detail=detail,
         group="state",
     )
 
@@ -431,7 +478,7 @@ def check_record_session() -> CheckResult:
         return CheckResult(
             name="Record session",
             status=STATUS_INFO,
-            detail="no workspace in cwd",
+            detail=f"no workspace yet at {ws.base}",
             group="state",
         )
     sm = SessionManager(ws)
@@ -624,7 +671,7 @@ def check_lan_proxy() -> CheckResult:
         return CheckResult(
             name="LAN proxy (device)",
             status=STATUS_INFO,
-            detail="no workspace in cwd",
+            detail=f"no workspace yet at {ws.base}",
             group="state",
         )
     sm = SessionManager(ws)
@@ -752,6 +799,7 @@ def run_all_checks() -> list[CheckResult]:
         check_claude_skill(),
         check_host_ca(),
         check_workspace(),
+        check_single_instance(),
         check_active_profile_ssl_list(),
         check_record_session(),
         check_vpn_active(),

@@ -57,6 +57,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Preserve original Cache-Control headers (default: force no-cache).",
     )
     record_commands.add_delay_arguments(start_p)
+    record_commands.add_tray_arguments(start_p)
     start_p.add_argument("--json", action="store_true", dest="json_mode")
     start_p.set_defaults(func=cmd_start)
 
@@ -233,6 +234,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             proxy_mode=proxy_mode,
             wireguard_keyfile=workspace.wireguard_keyfile if wireguard else None,
             delay=delay,
+            start_tray=not getattr(args, "no_tray", False),
         )
     except ProxyLaunchError as exc:
         return emit_error(
