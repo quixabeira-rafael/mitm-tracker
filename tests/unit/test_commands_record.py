@@ -115,6 +115,89 @@ def test_keep_cache_disables_no_cache(patched_environment, capsys, tmp_repo: Pat
     assert "tracker_no_cache=false" in joined
 
 
+def test_start_without_delay_omits_addon_options(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    rc = main(["record", "start", "--port", "8123", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == EXIT_OK
+    assert out["delay_ms"] == 0
+    assert out["delay_jitter_ms"] == 0
+    joined = " ".join(patched_environment["captured_cmd"][-1])
+    assert "tracker_delay_ms" not in joined
+
+
+def test_start_with_delay_and_jitter_sets_addon_options(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    rc = main(
+        [
+            "record",
+            "start",
+            "--port",
+            "8123",
+            "--delay",
+            "1.5s",
+            "--delay-jitter",
+            "200ms",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert rc == EXIT_OK
+    assert out["delay_ms"] == 1500
+    assert out["delay_jitter_ms"] == 200
+    joined = " ".join(patched_environment["captured_cmd"][-1])
+    assert "tracker_delay_ms=1500" in joined
+    assert "tracker_delay_jitter_ms=200" in joined
+
+    workspace = workspace_for(tmp_repo)
+    state = json.loads(workspace.state_path.read_text())
+    assert state["delay_ms"] == 1500
+    assert state["delay_jitter_ms"] == 200
+
+
+def test_start_rejects_invalid_delay(patched_environment, capsys, tmp_repo: Path) -> None:
+    rc = main(["record", "start", "--delay", "later", "--json"])
+    out = json.loads(capsys.readouterr().err)
+    assert rc == EXIT_INVALID_STATE
+    assert out["error"] == "invalid_delay"
+    assert patched_environment["captured_cmd"] == []
+
+
+def test_start_rejects_jitter_without_delay(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    rc = main(["record", "start", "--delay-jitter", "200ms", "--json"])
+    out = json.loads(capsys.readouterr().err)
+    assert rc == EXIT_INVALID_STATE
+    assert out["error"] == "invalid_delay"
+
+
+def test_status_reports_the_session_delay(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    main(["record", "start", "--delay", "800ms", "--delay-jitter", "200ms", "--json"])
+    capsys.readouterr()
+
+    rc = main(["record", "status", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == EXIT_OK
+    assert out["delay_ms"] == 800
+    assert out["delay_jitter_ms"] == 200
+
+
+def test_status_text_shows_delay_window(
+    patched_environment, capsys, tmp_repo: Path
+) -> None:
+    main(["record", "start", "--delay", "800ms", "--delay-jitter", "200ms"])
+    capsys.readouterr()
+
+    rc = main(["record", "status"])
+    assert rc == EXIT_OK
+    assert "delay: 800ms +/-200ms (600-1000ms)" in capsys.readouterr().out
+
+
 def test_start_idempotent_when_already_running(
     patched_environment, capsys, tmp_repo: Path
 ) -> None:

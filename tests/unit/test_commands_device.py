@@ -105,6 +105,72 @@ def test_start_wireguard_generates_keyfile_and_uses_wireguard_mode(
     assert workspace_for().wireguard_keyfile.exists()
 
 
+def test_start_forwards_the_session_delay(tmp_repo: Path, monkeypatch, capsys):
+    from mitm_tracker.commands import record as record_module
+    from mitm_tracker.delay import DelayProfile
+
+    ca = tmp_repo / "ca.pem"
+    ca.write_text("x", encoding="ascii")
+    monkeypatch.setattr(device_module.cert_manager, "ensure_ca_exists", lambda *a, **k: ca)
+    monkeypatch.setattr(
+        net_info,
+        "lan_address",
+        lambda **kw: net_info.LanAddress(service="Wi-Fi", ip="192.168.1.44", source="networksetup"),
+    )
+
+    captured = {}
+
+    def fake_launch(**kwargs):
+        captured.update(kwargs)
+        return record_module.ProxyLaunchResult(
+            pid=4242,
+            mode="all",
+            port=kwargs["port"],
+            listen_host=kwargs["listen_host"],
+            profile="default",
+            session_db=workspace_for().captures_dir / "s.db",
+            ssl_count=3,
+            proxy_service=None,
+            no_cache=True,
+            proxy_mode=kwargs["proxy_mode"],
+            delay=kwargs["delay"],
+        )
+
+    monkeypatch.setattr(record_module, "launch_proxy", fake_launch)
+    monkeypatch.setattr(device_module, "_spawn_help_server", lambda **kw: 4243)
+
+    rc = main(
+        ["device", "start", "--delay", "1s", "--delay-jitter", "250ms", "--json"]
+    )
+    assert rc == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["delay"] == DelayProfile(base_ms=1000, jitter_ms=250)
+    assert payload["delay_ms"] == 1000
+    assert payload["delay_jitter_ms"] == 250
+
+
+def test_start_rejects_invalid_delay(tmp_repo: Path, monkeypatch, capsys):
+    from mitm_tracker.commands import record as record_module
+
+    ca = tmp_repo / "ca.pem"
+    ca.write_text("x", encoding="ascii")
+    monkeypatch.setattr(device_module.cert_manager, "ensure_ca_exists", lambda *a, **k: ca)
+    monkeypatch.setattr(
+        net_info,
+        "lan_address",
+        lambda **kw: net_info.LanAddress(service="Wi-Fi", ip="192.168.1.44", source="networksetup"),
+    )
+
+    def fake_launch(**kwargs):
+        raise AssertionError("launch_proxy should not run with an invalid delay")
+
+    monkeypatch.setattr(record_module, "launch_proxy", fake_launch)
+
+    rc = main(["device", "start", "--delay", "soon", "--json"])
+    assert rc == EXIT_INVALID_STATE
+    assert json.loads(capsys.readouterr().err)["error"] == "invalid_delay"
+
+
 def test_status_reports_wireguard_transport(tmp_repo: Path, monkeypatch, capsys):
     ws = workspace_for()
     ws.ensure()

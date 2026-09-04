@@ -68,6 +68,8 @@ class SessionManager:
         proxy_service: str | None,
         listen_host: str | None = None,
         proxy_mode: str = "regular",
+        delay_ms: int = 0,
+        delay_jitter_ms: int = 0,
     ) -> dict:
         state = self.read_state()
         state.update(
@@ -82,6 +84,8 @@ class SessionManager:
                 "proxy_service": proxy_service,
                 "listen_host": listen_host,
                 "proxy_mode": proxy_mode,
+                "delay_ms": int(delay_ms),
+                "delay_jitter_ms": int(delay_jitter_ms),
                 "stopped_at": None,
                 "help_pid": None,
                 "help_port": None,

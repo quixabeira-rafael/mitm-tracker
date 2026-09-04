@@ -9,7 +9,7 @@ CLI on top of `mitmproxy` that captures HTTP(S) flows into per-session SQLite, s
 
 ## Mental model (read first)
 
-Six facts that are not obvious from `--help`:
+Seven facts that are not obvious from `--help`:
 
 1. **Workspace is the cwd.** `mitm-tracker` resolves `.mitm-tracker/` from `Path.cwd()` with **no walk-up**. Running `query recent` from a subdirectory of a project that has a workspace at the root will silently create a fresh empty workspace there. Always `cd` to the project root that owns the running session before invoking any command. If the user runs a command and gets `no record sessions found` despite a session being active, this is almost always the cause.
 
@@ -21,7 +21,9 @@ Six facts that are not obvious from `--help`:
 
 5. **The mitmproxy CA can become a stale orphan.** `~/.mitmproxy/mitmproxy-ca-cert.pem` is generated on the first `mitmdump` run and reused forever. If something deletes that file (a manual cleanup, `setup uninstall`, etc.), the next `record start` regenerates the CA with a **new fingerprint** — but the iOS Simulator still trusts the **old** one. Symptom: TLS suddenly fails inside the app even though `cert status` says installed. Fix: re-run `mitm-tracker cert install`. Cross-check with `mitm-tracker doctor` (shows the current CA's SHA256 in the Runtime state group).
 
-6. **Decrypting HTTPS from the Mac host requires a separate, more dangerous step.** `mitm-tracker cert install` only trusts the CA inside iOS Simulators. To intercept Safari / native apps / OS processes you must run `mitm-tracker cert host install` — this trusts the mitmproxy CA system-wide on the Mac, for ALL TLS connections (App Store, OS updates, everything). Always reverse it with `mitm-tracker cert host uninstall` when done. The matching private key at `~/.mitmproxy/mitmproxy-ca.pem` becomes a high-value file while host trust is active. The command auto-replaces stale managed CAs (handles the regen scenario from #5), only removes what we installed at uninstall time, and runs `security verify-cert -p ssl` to confirm the trust setting actually took effect.
+6. **The response delay is fixed for the life of a session.** `--delay`/`--delay-jitter` become `mitmdump` options at spawn time, so they do **not** hot-reload like Map Local rules. Changing the throttle means `record stop && record start --delay ...`. The delay is session-wide (every response, upstream and mocked alike) and latency-only — there is no bandwidth cap, no per-host and no per-rule delay. It also inflates `duration_total_ms` in the capture DB, so subtract the configured delay when reading timings from a throttled session.
+
+7. **Decrypting HTTPS from the Mac host requires a separate, more dangerous step.** `mitm-tracker cert install` only trusts the CA inside iOS Simulators. To intercept Safari / native apps / OS processes you must run `mitm-tracker cert host install` — this trusts the mitmproxy CA system-wide on the Mac, for ALL TLS connections (App Store, OS updates, everything). Always reverse it with `mitm-tracker cert host uninstall` when done. The matching private key at `~/.mitmproxy/mitmproxy-ca.pem` becomes a high-value file while host trust is active. The command auto-replaces stale managed CAs (handles the regen scenario from #5), only removes what we installed at uninstall time, and runs `security verify-cert -p ssl` to confirm the trust setting actually took effect.
 
 ## When to invoke this skill
 
@@ -32,6 +34,7 @@ Six facts that are not obvious from `--help`:
 - "Capture network traffic from the simulator" → `record start`
 - "Capture traffic from a real iPhone / physical device" → `device start` (Workflow A2)
 - "I added a new SSL host but I don't see it decrypted" → restart record (gotcha #3)
+- "Simulate a slow network / add latency / make the API slow" → `record start --delay 800ms --delay-jitter 200ms` (Workflow C2)
 
 ## Workflow A — first-time setup in a new project
 
@@ -105,6 +108,18 @@ mitm-tracker maplocal remove <id>   # also deletes body + headers files
 
 The addon strips length-dependent headers (`Content-Length`, `ETag`, `Last-Modified`, `Transfer-Encoding`, `Content-Encoding`) on synthesized responses, so editing the body never desyncs the wire format. Cache headers are also rewritten so the client cannot serve a stale copy.
 
+## Workflow C2 — simulate a slow network (response delay)
+
+```bash
+mitm-tracker record start --delay 800ms                       # every response held 800ms
+mitm-tracker record start --delay 800ms --delay-jitter 200ms   # random 600-1000ms per response
+mitm-tracker record status                                     # shows the active window
+```
+
+`--delay` takes bare milliseconds (`800`), an explicit unit (`800ms`) or seconds (`1.5s`), capped at `120000ms`. `--delay-jitter` is a symmetric spread that requires `--delay` and clamps at `0` on the low end. Both flags also exist on `device start`. Invalid values fail fast with `{"error": "invalid_delay"}` and exit 2 — the proxy is never spawned.
+
+The delay lands in the `responseheaders` hook, before the body is forwarded, so it applies to upstream responses **and** Map Local mocks with one setting. Combine the two to mock a payload *and* make it slow. See mental model #6 for the restart requirement and the timing caveat.
+
 ## Workflow D — reproduce a captured request
 
 ```bash
@@ -155,8 +170,8 @@ Other actions:
 | `maplocal {add,from-flow,list,show,edit,enable,disable,remove}` | Local response overrides | `from-flow <seq>` clones a captured response |
 | `cert {install,status,simulators}` | Install mitmproxy CA into booted simulator(s) | iOS 26 uses `TrustStore.sqlite3` (sha256); legacy keychain (sha1) still supported |
 | `cert host {install,uninstall,status}` | Trust the mitmproxy CA system-wide on the Mac (DANGEROUS) | Run `--yes` to skip the confirmation banner, `--force` to re-run when previous attempt left trust missing. Always reverse with `cert host uninstall` |
-| `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080 |
-| `device {start,status,stop}` | Physical iOS device: route over the LAN + serve cert/setup page | `--transport wireguard` (every app, incl. QUIC; device needs the WireGuard app) or `wifi-proxy` (Safari/proxy-aware only). Binds to `0.0.0.0`, leaves the Mac's own proxy untouched. Daemonizes proxy + setup page; `device stop`/`record stop`/tray stop both. `--help-port N` (8888), `--wireguard-port N` (51820). Same session/state as `record` |
+| `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080; `--delay 800ms` + `--delay-jitter 200ms` to throttle every response (session-wide, needs a restart to change) |
+| `device {start,status,stop}` | Physical iOS device: route over the LAN + serve cert/setup page | `--transport wireguard` (every app, incl. QUIC; device needs the WireGuard app) or `wifi-proxy` (Safari/proxy-aware only). Binds to `0.0.0.0`, leaves the Mac's own proxy untouched. Daemonizes proxy + setup page; `device stop`/`record stop`/tray stop both. `--help-port N` (8888), `--wireguard-port N` (51820). `--delay`/`--delay-jitter` as in `record start`. Same session/state as `record` |
 | `query {recent,failures,slow,hosts,show,sql,curl,sessions,use}` | Inspect captured flows | `--json` on every subcommand; `query use <session>` switches active DB |
 | `release [--older-than 24h] [--dry-run]` | Delete stale capture databases | `--no-keep-active` to allow deleting the active one |
 | `tray {run,install,uninstall,status}` | macOS menu bar indicator (🟢/🔴/🟡); requires `[tray]` extra | `tray install` registers a LaunchAgent for auto-launch on login; `tray run` is foreground only |
@@ -188,6 +203,8 @@ Run `mitm-tracker doctor` first. It tells you exactly what's missing and gives t
 - **`record status` shows `running: false, crashed: true`** → daemon died but proxy state is dirty. Run `record stop` to clean up before `record start`.
 - **`query show <seq> --json` is huge** → it dumps `request_body_raw` and `response_body_raw`. Prefer `query sql` selecting only the columns you need, or pipe through `jq` to drop the body fields.
 - **Apex domain not matched** → `*.example.com` does not cover `example.com`. Add both.
+- **`--delay` seems to have no effect / changing it did nothing** → the flag is read at spawn time. `record status` reports the delay actually in force; if it says `off` or the old window, run `record stop && record start --delay ...`.
+- **Captured `duration_total_ms` looks inflated** → check `record status` for an active delay and subtract it. The throttle is applied before the response leaves the proxy, so it is inside the measured duration.
 - **Cert install on a non-booted simulator** → `cert install` only targets booted devices. Boot the simulator first (`xcrun simctl boot <udid>`).
 - **App's TLS suddenly broke after a cleanup** → the mitmproxy CA was likely regenerated. Run `mitm-tracker cert install` to push the new CA. See mental model #5.
 - **`record stop` returned exit 0 but the system proxy is still on `127.0.0.1:8080`** → no, it doesn't anymore: the new code returns `EXIT_SYSTEM` on partial failure and emits a structured error on stderr that the tray surfaces as `rumps.alert`. If you still see this, the user is running an old build — `pipx reinstall mitm-tracker` and re-run `setup install`.

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from mitmproxy.test import taddons, tflow
 
+from mitm_tracker import addon as addon_module
 from mitm_tracker.addon import TrackerAddon, build_request_payload, build_response_payload
 from mitm_tracker.store import FlowStore
 
@@ -484,3 +485,129 @@ def test_maplocal_no_match_passes_request_through(db_path: Path, tmp_path: Path)
     rows = reader.query_recent()
     assert rows[0]["mocked"] == 0
     reader.close()
+
+
+def test_delay_option_is_inactive_by_default(db_path: Path) -> None:
+    addon, ctx = _bootstrap_addon(db_path)
+    with ctx:
+        assert addon._delay.active is False
+
+
+def test_delay_options_build_the_profile(db_path: Path) -> None:
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_delay_ms=800,
+        tracker_delay_jitter_ms=200,
+    )
+    with ctx:
+        assert addon._delay.base_ms == 800
+        assert addon._delay.jitter_ms == 200
+        assert addon._delay.describe() == "800ms +/-200ms (600-1000ms)"
+
+
+async def test_responseheaders_does_not_sleep_without_delay(
+    db_path: Path, monkeypatch
+) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(addon_module.asyncio, "sleep", fake_sleep)
+
+    addon, ctx = _bootstrap_addon(db_path)
+    with ctx:
+        await addon.responseheaders(tflow.tflow(resp=True))
+
+    assert slept == []
+
+
+async def test_responseheaders_sleeps_for_the_configured_delay(
+    db_path: Path, monkeypatch
+) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(addon_module.asyncio, "sleep", fake_sleep)
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_delay_ms=800,
+    )
+    with ctx:
+        await addon.responseheaders(tflow.tflow(resp=True))
+
+    assert slept == [0.8]
+
+
+async def test_responseheaders_delay_stays_inside_the_jitter_window(
+    db_path: Path, monkeypatch
+) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(addon_module.asyncio, "sleep", fake_sleep)
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_delay_ms=800,
+        tracker_delay_jitter_ms=200,
+    )
+    with ctx:
+        for _ in range(50):
+            await addon.responseheaders(tflow.tflow(resp=True))
+
+    assert len(slept) == 50
+    assert all(0.6 <= seconds <= 1.0 for seconds in slept)
+
+
+async def test_responseheaders_delays_mocked_flows_too(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from mitm_tracker.maplocal import MapLocalStore
+
+    profile_dir = tmp_path / "profile"
+    MapLocalStore(profile_dir=profile_dir).add(
+        url_pattern="http://address:22/path",
+        body=b'{"mocked":true}',
+    )
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(addon_module.asyncio, "sleep", fake_sleep)
+
+    addon = TrackerAddon()
+    ctx = taddons.context(addon)
+    ctx.configure(
+        addon,
+        tracker_db_path=str(db_path),
+        tracker_mode="all",
+        tracker_maplocal_dir=str(profile_dir),
+        tracker_delay_ms=500,
+    )
+    with ctx:
+        flow = tflow.tflow(resp=False)
+        addon.request(flow)
+        assert flow.response is not None
+        await addon.responseheaders(flow)
+
+    assert slept == [0.5]

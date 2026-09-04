@@ -17,6 +17,7 @@ from mitm_tracker.config import (
     LAN_LISTEN_HOST,
     workspace_for,
 )
+from mitm_tracker.delay import DelayError
 from mitm_tracker.output import (
     EXIT_INVALID_STATE,
     EXIT_OK,
@@ -55,6 +56,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Preserve original Cache-Control headers (default: force no-cache).",
     )
+    record_commands.add_delay_arguments(start_p)
     start_p.add_argument("--json", action="store_true", dest="json_mode")
     start_p.set_defaults(func=cmd_start)
 
@@ -212,6 +214,16 @@ def cmd_start(args: argparse.Namespace) -> int:
         )
 
     try:
+        delay = record_commands.delay_from_args(args)
+    except DelayError as exc:
+        return emit_error(
+            "invalid_delay",
+            str(exc),
+            json_mode=args.json_mode,
+            exit_code=EXIT_INVALID_STATE,
+        )
+
+    try:
         result = record_commands.launch_proxy(
             mode=args.mode,
             port=proxy_port,
@@ -220,6 +232,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             configure_system_proxy=False,
             proxy_mode=proxy_mode,
             wireguard_keyfile=workspace.wireguard_keyfile if wireguard else None,
+            delay=delay,
         )
     except ProxyLaunchError as exc:
         return emit_error(
@@ -264,6 +277,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         "help_url": help_url,
         "session_db": str(result.session_db),
         "ssl_list_count": result.ssl_count,
+        **result.delay.to_dict(),
     }
 
     if args.json_mode:
