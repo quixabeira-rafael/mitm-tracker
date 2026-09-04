@@ -33,6 +33,10 @@ the macOS system proxy.
   client always re-fetches and sees mocked responses without force-quit.
   Disable per-session with `--keep-cache` when you actually want to test
   caching.
+- **Session-wide response delay.** `record start --delay 800ms
+  --delay-jitter 200ms` holds every response — upstream and Map Local alike
+  — for a random slice of that window, so slow-network and race-condition
+  bugs reproduce on demand.
 - **Faithful curl reproduction.** `query curl <seq>` rebuilds the exact
   request that was captured — every header preserved, original case,
   http version explicit, binary bodies dumped to a `--data-binary` file.
@@ -338,6 +342,31 @@ The addon strips length-dependent headers (`Content-Length`, `ETag`,
 response, so editing the body never desyncs the wire format. Cache headers
 are also rewritten so the client cannot serve a stale copy.
 
+### Simulate a slow network (response delay)
+
+```bash
+# Every response is held for 800ms before it reaches the client.
+mitm-tracker record start --delay 800ms
+
+# Same, but each response picks a random delay in 600-1000ms.
+mitm-tracker record start --delay 800ms --delay-jitter 200ms
+
+mitm-tracker record status          # shows the active delay window
+```
+
+`--delay` accepts bare milliseconds (`800`), an explicit unit (`800ms`), or
+seconds (`1.5s`), capped at `120000ms`. `--delay-jitter` is a symmetric
+spread around `--delay` — it requires `--delay` and is clamped to `0` on the
+low end. The delay is applied inside the addon before the response body is
+forwarded, so it covers upstream responses **and** Map Local mocks with the
+same setting. It is fixed for the life of the session: change it with
+`record stop && record start --delay ...`. `device start` takes the same two
+flags.
+
+Because the delay lands before the response reaches the client, the
+`duration_total_ms` recorded for a flow includes it — subtract the configured
+delay when reading captured timings from a throttled session.
+
 ### Switch between historical sessions
 
 ```bash
@@ -409,7 +438,7 @@ mitm-tracker profile {create,use,list,show,delete}
 mitm-tracker ssl     {add,remove,list}
 mitm-tracker maplocal {add,from-flow,list,show,edit,enable,disable,remove}
 mitm-tracker cert    {install,status,simulators}
-mitm-tracker record  {start,stop,status,logs}
+mitm-tracker record  {start,stop,status,logs}       # --delay 800ms --delay-jitter 200ms to throttle responses
 mitm-tracker device  {start,status,stop}            # Physical iOS device: --transport wireguard (every app) or wifi-proxy
 mitm-tracker query   {recent,failures,slow,hosts,show,sql,curl,sessions,use}
 mitm-tracker release [--older-than 24h] [--dry-run] [--no-keep-active]
@@ -552,6 +581,7 @@ src/mitm_tracker/
 ├── profile_manager.py     # profile CRUD and active selection
 ├── ssl_list.py            # JSON-backed SSL decryption list
 ├── maplocal.py            # JSON + body files for Map Local rules
+├── delay.py               # duration parsing and the session delay window
 ├── url_matcher.py         # host/path glob and four query-string modes
 ├── curl_export.py         # rigorous curl reproduction
 ├── release.py             # capture-database cleanup
@@ -583,8 +613,11 @@ tests/
   workaround at the mitmproxy layer.
 - WebSocket frames are not currently captured (the schema has the column but
   the addon does not populate it yet).
-- Map Local rewrites the response only. Request rewriting, throttling, and
-  Map Remote are not implemented.
+- Map Local rewrites the response only. Request rewriting and Map Remote are
+  not implemented.
+- Throttling is latency-only and session-wide: `--delay`/`--delay-jitter`
+  apply to every response. There is no bandwidth cap and no per-host or
+  per-rule delay.
 
 ---
 

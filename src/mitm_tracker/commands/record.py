@@ -8,7 +8,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -19,6 +19,7 @@ from mitm_tracker.config import (
     Workspace,
     workspace_for,
 )
+from mitm_tracker.delay import DelayError, DelayProfile
 from mitm_tracker.output import (
     EXIT_INVALID_STATE,
     EXIT_OK,
@@ -58,6 +59,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Preserve original Cache-Control headers (default: force no-cache like Charles).",
     )
+    add_delay_arguments(start_p)
     start_p.add_argument("--json", action="store_true", dest="json_mode")
     start_p.set_defaults(func=cmd_start)
 
@@ -73,6 +75,23 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     logs_p.add_argument("--tail", type=int, default=50)
     logs_p.add_argument("--follow", action="store_true")
     logs_p.set_defaults(func=cmd_logs)
+
+
+def add_delay_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--delay",
+        help="Delay every response by this much, e.g. '800', '800ms', '1.5s'.",
+    )
+    parser.add_argument(
+        "--delay-jitter",
+        help="Random spread around --delay, e.g. '200ms' for 800ms +/-200ms.",
+    )
+
+
+def delay_from_args(args: argparse.Namespace) -> DelayProfile:
+    return DelayProfile.parse(
+        getattr(args, "delay", None), getattr(args, "delay_jitter", None)
+    )
 
 
 class ProxyLaunchError(RuntimeError):
@@ -95,6 +114,7 @@ class ProxyLaunchResult:
     proxy_service: str | None
     no_cache: bool
     proxy_mode: str = "regular"
+    delay: DelayProfile = field(default_factory=DelayProfile)
 
 
 def launch_proxy(
@@ -106,6 +126,7 @@ def launch_proxy(
     configure_system_proxy: bool,
     proxy_mode: str = "regular",
     wireguard_keyfile: Path | None = None,
+    delay: DelayProfile | None = None,
     spawn: SpawnFn | None = None,
 ) -> ProxyLaunchResult:
     workspace = workspace_for()
@@ -156,6 +177,7 @@ def launch_proxy(
     maplocal_dir = workspace.profile_dir(profile)
 
     no_cache = not keep_cache
+    delay_profile = delay or DelayProfile()
 
     cmd = _build_mitmdump_command(
         mitmdump_bin=mitmdump_bin,
@@ -168,6 +190,7 @@ def launch_proxy(
         no_cache=no_cache,
         proxy_mode=proxy_mode,
         wireguard_keyfile=wireguard_keyfile,
+        delay=delay_profile,
     )
     log_handle = workspace.log_path.open("ab", buffering=0)
     log_handle.write(
@@ -201,6 +224,8 @@ def launch_proxy(
         proxy_service=proxy_service,
         listen_host=listen_host,
         proxy_mode=proxy_mode,
+        delay_ms=delay_profile.base_ms,
+        delay_jitter_ms=delay_profile.jitter_ms,
     )
     log_handle.close()
 
@@ -215,6 +240,7 @@ def launch_proxy(
         proxy_service=proxy_service,
         no_cache=no_cache,
         proxy_mode=proxy_mode,
+        delay=delay_profile,
     )
 
 
@@ -231,12 +257,23 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
         return EXIT_OK
 
     try:
+        delay = delay_from_args(args)
+    except DelayError as exc:
+        return emit_error(
+            "invalid_delay",
+            str(exc),
+            json_mode=args.json_mode,
+            exit_code=EXIT_INVALID_STATE,
+        )
+
+    try:
         result = launch_proxy(
             mode=args.mode,
             port=args.port,
             listen_host=args.listen_host,
             keep_cache=args.keep_cache,
             configure_system_proxy=not args.no_system_proxy,
+            delay=delay,
             spawn=spawn,
         )
     except ProxyLaunchError as exc:
@@ -258,6 +295,7 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
         "ssl_list_count": result.ssl_count,
         "proxy_service": result.proxy_service,
         "no_cache": result.no_cache,
+        **result.delay.to_dict(),
     }
     if args.json_mode:
         emit_json(payload)
@@ -270,6 +308,8 @@ def cmd_start(args: argparse.Namespace, *, spawn: SpawnFn | None = None) -> int:
                 db=payload["session_db"],
             )
         )
+        if result.delay.active:
+            emit_text(f"response delay: {result.delay.describe()}")
     if result.ssl_count == 0:
         emit_text(
             "warning: SSL list is empty for profile '{p}'; HTTPS will pass "
@@ -376,6 +416,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "captured_count": captured,
         "proxy_service": state.get("proxy_service"),
         "listen_host": state.get("listen_host"),
+        "delay_ms": int(state.get("delay_ms") or 0),
+        "delay_jitter_ms": int(state.get("delay_jitter_ms") or 0),
     }
     if args.json_mode:
         emit_json(payload)
@@ -385,13 +427,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         emit_text("no record session has been started yet")
         return EXIT_OK
     label = "running" if running else ("crashed" if crashed else "stopped")
+    delay = DelayProfile(
+        base_ms=payload["delay_ms"], jitter_ms=payload["delay_jitter_ms"]
+    )
     emit_text(
         f"state: {label}\n"
         f"pid: {payload['pid']}\n"
         f"mode: {payload['mode']}\n"
         f"port: {payload['port']}\n"
         f"db: {payload['session_db']}\n"
-        f"captured: {payload['captured_count']}"
+        f"captured: {payload['captured_count']}\n"
+        f"delay: {delay.describe()}"
     )
     return EXIT_OK
 
@@ -436,6 +482,7 @@ def _build_mitmdump_command(
     no_cache: bool = True,
     proxy_mode: str = "regular",
     wireguard_keyfile: Path | None = None,
+    delay: DelayProfile | None = None,
 ) -> list[str]:
     addon_path = _addon_module_path()
     cmd = [mitmdump_bin, "-s", addon_path]
@@ -459,6 +506,15 @@ def _build_mitmdump_command(
             f"tracker_no_cache={'true' if no_cache else 'false'}",
         ]
     )
+    if delay is not None and delay.active:
+        cmd.extend(
+            [
+                "--set",
+                f"tracker_delay_ms={delay.base_ms}",
+                "--set",
+                f"tracker_delay_jitter_ms={delay.jitter_ms}",
+            ]
+        )
     if maplocal_dir is not None:
         cmd.extend(["--set", f"tracker_maplocal_dir={maplocal_dir}"])
     cmd.extend(["--allow-hosts", allow_regex])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -10,6 +11,7 @@ from mitmproxy import ctx
 from mitmproxy import http as mitm_http
 from mitmproxy.http import HTTPFlow
 
+from mitm_tracker.delay import DelayProfile
 from mitm_tracker.maplocal import MapLocalRule, MapLocalStore
 from mitm_tracker.store import FlowStore
 from mitm_tracker.url_matcher import (
@@ -61,6 +63,7 @@ class TrackerAddon:
         self._maplocal_signature: tuple = ()
         self._maplocal_reload_lock = threading.Lock()
         self._no_cache: bool = False
+        self._delay: DelayProfile = DelayProfile()
 
     def load(self, loader) -> None:
         loader.add_option(
@@ -93,6 +96,18 @@ class TrackerAddon:
             default=True,
             help="Force-disable HTTP caching by rewriting Cache-Control headers on every response.",
         )
+        loader.add_option(
+            name="tracker_delay_ms",
+            typespec=int,
+            default=0,
+            help="Artificial latency in milliseconds added to every response (0 disables).",
+        )
+        loader.add_option(
+            name="tracker_delay_jitter_ms",
+            typespec=int,
+            default=0,
+            help="Random spread applied around tracker_delay_ms, in milliseconds.",
+        )
 
     def configure(self, updates) -> None:
         if "tracker_db_path" in updates and ctx.options.tracker_db_path:
@@ -110,6 +125,13 @@ class TrackerAddon:
             self._body_limit = int(ctx.options.tracker_body_limit)
         if "tracker_no_cache" in updates:
             self._no_cache = bool(ctx.options.tracker_no_cache)
+        if "tracker_delay_ms" in updates or "tracker_delay_jitter_ms" in updates:
+            self._delay = DelayProfile(
+                base_ms=max(0, int(ctx.options.tracker_delay_ms)),
+                jitter_ms=max(0, int(ctx.options.tracker_delay_jitter_ms)),
+            )
+            if self._delay.active:
+                log.info("Response delay enabled: %s", self._delay.describe())
         if "tracker_maplocal_dir" in updates:
             value = ctx.options.tracker_maplocal_dir
             if value:
@@ -234,6 +256,16 @@ class TrackerAddon:
             headers=header_tuples,
         )
         flow.response = response
+
+    async def responseheaders(self, flow: HTTPFlow) -> None:
+        """Hold the flow before its body reaches the client (session throttle).
+
+        Fires for both upstream responses and Map Local mocks, so a single
+        session-wide delay covers real and mocked traffic alike.
+        """
+        if not self._delay.active:
+            return
+        await asyncio.sleep(self._delay.next_delay_ms() / 1000.0)
 
     def response(self, flow: HTTPFlow) -> None:
         if self._no_cache and flow.response is not None:
