@@ -16,6 +16,7 @@ PID_FILENAME = "mitmproxy.pid"
 LOG_FILENAME = "mitmproxy.log"
 STATE_FILENAME = "state.json"
 PROXY_BACKUP_FILENAME = "proxy_backup.json"
+ACTIVE_TEST_FILENAME = "active_test.json"
 
 DEFAULT_PROFILE_NAME = "default"
 DEFAULT_PROXY_PORT = 8080
@@ -74,6 +75,10 @@ class Workspace:
     @property
     def proxy_backup_path(self) -> Path:
         return self.runtime_dir / PROXY_BACKUP_FILENAME
+
+    @property
+    def active_test_path(self) -> Path:
+        return self.runtime_dir / ACTIVE_TEST_FILENAME
 
     @property
     def wireguard_keyfile(self) -> Path:

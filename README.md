@@ -37,6 +37,11 @@ the macOS system proxy.
   --delay-jitter 200ms` holds every response — upstream and Map Local alike
   — for a random slice of that window, so slow-network and race-condition
   bugs reproduce on demand.
+- **Scripted test plans.** Group Python test cases under a titled plan and
+  switch between them with `test apply --test <plan> --test-case <case>`.
+  Each case is a tiny `on_request` / `on_response` script that can rewrite
+  traffic, answer locally, drop the connection, or reorder endpoints with
+  per-request delays — hot-reloaded, with a shared key/value store.
 - **Faithful curl reproduction.** `query curl <seq>` rebuilds the exact
   request that was captured — every header preserved, original case,
   http version explicit, binary bodies dumped to a `--data-binary` file.
@@ -281,12 +286,15 @@ The first time you run a command in a project, it creates `.mitm-tracker/`:
 │   ├── default/
 │   │   ├── ssl.json                # SSL decryption list
 │   │   ├── maplocal.json           # Map Local rules
-│   │   └── maplocal-bodies/        # response bodies + headers
+│   │   ├── maplocal-bodies/        # response bodies + headers
+│   │   └── tests/<plan>/           # test plans: plan.json, <case>.py, state.json
 │   └── my-app/                     # additional profiles
 ├── runtime/
 │   ├── mitmproxy.pid
 │   ├── mitmproxy.log
 │   ├── state.json                  # active profile, active session, etc.
+│   ├── active_test.json            # active test case (session-only)
+│   ├── test_error.json             # last error raised by the active test case
 │   └── proxy_backup.json           # restored on `record stop`
 └── captures/
     └── 2026-04-28_172537_my-app.db # one SQLite database per session
@@ -371,6 +379,15 @@ The addon strips length-dependent headers (`Content-Length`, `ETag`,
 response, so editing the body never desyncs the wire format. Cache headers
 are also rewritten so the client cannot serve a stale copy.
 
+**Conflict with test plans.** An active test case runs before Map Local. A
+request the case claims (`CLAIMS`, `request.claim()`, `respond()`, `abort()`)
+skips Map Local, so a rule can look "dead" while a case is active. An
+unclaimed request still gets the Map Local mock, and the case's `on_response`
+edits it. To diagnose, run `test status`, `maplocal list`, and
+`query show <seq> --json`: `mocked`/`mock_rule_id` tell whether Map Local
+answered, and the `X-Mitm-Test-Action` response header tells what the case
+did.
+
 ### Simulate a slow network (response delay)
 
 ```bash
@@ -395,6 +412,83 @@ flags.
 Because the delay lands before the response reaches the client, the
 `duration_total_ms` recorded for a flow includes it — subtract the configured
 delay when reading captured timings from a throttled session.
+
+### Script scenarios with test plans
+
+A **test plan** groups **test cases** under a title and description. Each
+case is a Python file with up to two plain functions, so building a scenario
+("users returns 400", "orders arrives before feed", "feed fails at random")
+takes a few lines.
+
+```bash
+mitm-tracker test new --test checkout --title "Checkout" --description "Cart and payment flows"
+mitm-tracker test new-case --test checkout --test-case cart_returns_400 --description "Cart returns 400"
+# edit .mitm-tracker/profiles/<profile>/tests/checkout/cart_returns_400.py
+
+mitm-tracker record start
+mitm-tracker test apply --test checkout --test-case cart_returns_400
+mitm-tracker test apply --test checkout --test-case orders_before_feed   # swap scenarios live
+mitm-tracker test status                                                # active case + last script error
+mitm-tracker test clear                                                 # back to normal traffic
+```
+
+A case script:
+
+```python
+"""Cart fails once with 503, then orders arrives 1.5s after feed."""
+
+CLAIMS = ["https://api.example.com/cart/**"]
+
+
+def on_request(request):
+    if request.path == "/cart" and store.incr("cart_calls") == 1:
+        request.respond(503, json={"error": "unavailable"}, headers={"Retry-After": "5"})
+
+
+def on_response(request, response):
+    if request.path == "/orders":
+        response.delay = 1500
+```
+
+`mitm-tracker test api` (or `--json`) prints the complete, always-current
+reference below, plus the pipeline and rules.
+
+| Object | API |
+|---|---|
+| `request` | `method`, `path`, `host` (settable), `url`, `scheme`, `port`, `query`, `headers` (mutable), `body` / `text` / `json` (get/set), `delay` (ms, before the server is called), `matches(pattern)`, `claim()`, `respond(status, headers=, body=\|json=, delay=)`, `abort()` |
+| `response` | `status` (sets the reason phrase too), `headers`, `body` / `text` / `json` (get/set), `delay` (ms, before the app receives it) |
+| `store` | Global key/value store shared by every case of the plan, persisted in `tests/<plan>/state.json`: `get(k, default)`, `set(k, v)`, `incr(k, by=1)`, `delete(k)`, `clear()`, `all()` |
+
+Rules:
+
+- `on_request` runs before Map Local and the server. `respond()` answers
+  locally (the server is never called); `abort()` drops the connection.
+  `on_response` runs on every response — local, Map Local, or upstream.
+- **Test cases win over Map Local.** A request matching `CLAIMS`, or one where
+  the script called `claim()`, `respond()`, or `abort()`, skips Map Local.
+  Without a claim, an `on_response` hook edits whatever Map Local served. When
+  either feature misbehaves, check this conflict first: `test status`,
+  `maplocal list`, and `query show <seq> --json` (`mocked`/`mock_rule_id` and
+  the `X-Mitm-Test-Action` header).
+- Delays add up: `request.delay` + server time + `response.delay` + the
+  session `--delay`.
+- Every response seen while a case is active carries `X-Mitm-Test:
+  <plan>/<case>` and `X-Mitm-Test-Action:
+  responded|modified|aborted|claimed|passthrough`, so captured flows are easy
+  to find with `query`.
+- An exception inside a hook reverts that hook's changes, lets the request
+  through, and is reported by `test status`, `doctor` (Test case row), and the
+  proxy log.
+- Test cases only live inside a running session: `test apply` fails when the
+  proxy is down, `record start` always begins with no active case, and
+  `record stop` deactivates it. Script edits hot-reload on the next request.
+- `test apply` validates before activating: the plan and case exist, the
+  script compiles, defines a hook, and `CLAIMS` is a literal list of valid
+  URL patterns (same syntax as Map Local).
+- The store survives proxy restarts and `apply`; inspect or reset it with
+  `test state show --test <plan>` / `test state clear --test <plan>`.
+- Scripts are regular Python running inside the proxy process — only apply
+  code you trust.
 
 ### Switch between historical sessions
 
@@ -472,6 +566,7 @@ while one is already running.
 mitm-tracker profile {create,use,list,show,delete}
 mitm-tracker ssl     {add,remove,list}
 mitm-tracker maplocal {add,from-flow,list,show,edit,enable,disable,remove}
+mitm-tracker test    {list,show,new,new-case,apply,clear,status,api,state}  # Scripted test plans (--test, --test-case); `test api` prints the script API
 mitm-tracker cert    {install,status,simulators}
 mitm-tracker record  {start,stop,status,logs}       # --delay 800ms --delay-jitter 200ms to throttle responses, --no-tray
 mitm-tracker device  {start,status,stop}            # Physical iOS device: --transport wireguard (every app) or wifi-proxy
@@ -617,6 +712,10 @@ src/mitm_tracker/
 ├── profile_manager.py     # profile CRUD and active selection
 ├── ssl_list.py            # JSON-backed SSL decryption list
 ├── maplocal.py            # JSON + body files for Map Local rules
+├── testplan.py            # test plans/cases on disk, validation, active case
+├── testcase_api.py        # request/response/store objects exposed to case scripts
+├── testcase_addon.py      # TestCaseAddon — runs the active case inside mitmproxy
+├── testcase_reference.py  # script API reference served by `test api`
 ├── delay.py               # duration parsing and the session delay window
 ├── url_matcher.py         # host/path glob and four query-string modes
 ├── curl_export.py         # rigorous curl reproduction
@@ -628,6 +727,7 @@ src/mitm_tracker/
     ├── profile.py
     ├── ssl.py
     ├── maplocal.py
+    ├── test.py
     ├── cert.py
     ├── record.py
     ├── query.py

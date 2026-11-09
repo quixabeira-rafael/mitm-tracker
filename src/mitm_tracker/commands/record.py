@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from mitm_tracker import instance, tray_launch_agent
+from mitm_tracker import instance, testplan, tray_launch_agent
 from mitm_tracker.config import (
     DEFAULT_LISTEN_HOST,
     DEFAULT_PROXY_PORT,
@@ -194,6 +194,7 @@ def launch_proxy(
     ssl_count = len(ssl_list.entries)
 
     maplocal_dir = workspace.profile_dir(profile)
+    testplan.clear_active(workspace.active_test_path)
 
     no_cache = not keep_cache
     delay_profile = delay or DelayProfile()
@@ -210,6 +211,7 @@ def launch_proxy(
         proxy_mode=proxy_mode,
         wireguard_keyfile=wireguard_keyfile,
         delay=delay_profile,
+        active_test_path=workspace.active_test_path,
     )
     try:
         instance.acquire(
@@ -432,6 +434,7 @@ def cmd_stop(args: argparse.Namespace, *, kill: Callable[[int, int], None] | Non
         backup_path.unlink()
 
     sm.clear_pid()
+    testplan.clear_active(workspace.active_test_path)
     instance.release(instance.KIND_PROXY)
     final_state = sm.stop()
 
@@ -557,6 +560,7 @@ def _build_mitmdump_command(
     proxy_mode: str = "regular",
     wireguard_keyfile: Path | None = None,
     delay: DelayProfile | None = None,
+    active_test_path: Path | None = None,
 ) -> list[str]:
     addon_path = _addon_module_path()
     cmd = [mitmdump_bin, "-s", addon_path]
@@ -591,6 +595,8 @@ def _build_mitmdump_command(
         )
     if maplocal_dir is not None:
         cmd.extend(["--set", f"tracker_maplocal_dir={maplocal_dir}"])
+    if active_test_path is not None:
+        cmd.extend(["--set", f"tracker_active_test_path={active_test_path}"])
     cmd.extend(["--allow-hosts", allow_regex])
     return cmd
 
