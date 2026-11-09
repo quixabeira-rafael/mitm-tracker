@@ -643,13 +643,13 @@ def test_check_active_test_reports_label(tmp_repo, monkeypatch) -> None:
     assert result.group == "state"
 
 
-def test_check_active_test_warns_on_last_error(tmp_repo, monkeypatch) -> None:
+def test_check_active_test_reports_last_error_as_info(tmp_repo, monkeypatch) -> None:
     from mitm_tracker import testplan
 
     ws = _active_test_workspace(tmp_repo, monkeypatch, running=True)
     _write_active(ws)
     testplan.record_error(ws.active_test_path, {"hook": "on_response", "error": "RuntimeError: boom"})
     result = doctor.check_active_test()
-    assert result.status == doctor.STATUS_WARN
+    assert result.status == doctor.STATUS_INFO
     assert "RuntimeError: boom" in result.detail
     assert "/x/returns_400.py" in result.fix

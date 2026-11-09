@@ -143,3 +143,46 @@ def test_api_reference_matches_script_objects() -> None:
     assert names("request") == public(Request)
     assert names("response") == public(Response)
     assert names("store") == public(StateStore) - {"path"}
+
+
+def test_record_stop_survives_clear_active_failure(
+    tmp_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    workspace = workspace_for(tmp_repo)
+    workspace.ensure()
+    SessionManager(workspace).write_state({"running": True, "pid": 0})
+
+    def boom(path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(testplan, "clear_active", boom)
+    assert main(["record", "stop", "--json"]) == EXIT_OK
+    assert "failed to clear the active test case" in capsys.readouterr().err
+    assert SessionManager(workspace).read_state()["running"] is False
+
+
+def test_record_start_aborts_before_system_proxy_when_clear_fails(
+    tmp_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mitm_tracker.proxy_manager import ProxyManager
+
+    touched: list[str] = []
+
+    def boom(path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(testplan, "clear_active", boom)
+    monkeypatch.setattr(record_module, "_find_mitmdump", lambda: "/usr/bin/true")
+    monkeypatch.setattr(ProxyManager, "get_active_service", lambda self: touched.append("proxy") or "Wi-Fi")
+
+    with pytest.raises(record_module.ProxyLaunchError) as excinfo:
+        record_module.launch_proxy(
+            mode="all",
+            port=18999,
+            listen_host="127.0.0.1",
+            keep_cache=False,
+            configure_system_proxy=True,
+            start_tray=False,
+        )
+    assert excinfo.value.error == "test_state_failed"
+    assert touched == []

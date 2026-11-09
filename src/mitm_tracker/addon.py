@@ -14,7 +14,7 @@ from mitmproxy.http import HTTPFlow
 from mitm_tracker.delay import DelayProfile
 from mitm_tracker.maplocal import MapLocalRule, MapLocalStore
 from mitm_tracker.store import FlowStore
-from mitm_tracker.testcase_addon import TestCaseAddon, is_claimed
+from mitm_tracker.testcase_addon import TestCaseAddon, TestCaseDelayAddon, is_claimed
 from mitm_tracker.url_matcher import (
     CompiledPattern,
     UrlMatcherError,
@@ -600,4 +600,4 @@ def _maplocal_signature(profile_dir: Path) -> tuple:
     return tuple(parts)
 
 
-addons = [TestCaseAddon(), TrackerAddon()]
+addons = [TestCaseAddon(), TrackerAddon(), TestCaseDelayAddon()]

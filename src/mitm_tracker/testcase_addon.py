@@ -21,11 +21,12 @@ METADATA_KEY = "mitm_tracker.test"
 HEADER_TEST = "X-Mitm-Test"
 HEADER_ACTION = "X-Mitm-Test-Action"
 
-ACTION_ABORTED = "aborted"
 ACTION_RESPONDED = "responded"
 ACTION_MODIFIED = "modified"
 ACTION_CLAIMED = "claimed"
 ACTION_PASSTHROUGH = "passthrough"
+
+_SCRIPT_ERRORS = (Exception, SystemExit)
 
 
 def is_claimed(flow: HTTPFlow) -> bool:
@@ -92,7 +93,7 @@ class TestCaseAddon:
             claimed_before = control.claimed
             try:
                 hook(Request(flow, control))
-            except Exception:
+            except _SCRIPT_ERRORS:
                 flow.request.set_state(before)
                 flow.response = None
                 control.claimed = claimed_before
@@ -104,12 +105,8 @@ class TestCaseAddon:
             else:
                 entry["modified"] = flow.request.get_state() != before
 
-        if control.aborted:
-            if flow.killable:
-                flow.kill()
-            return
-        if control.request_delay_ms:
-            await asyncio.sleep(control.request_delay_ms / 1000.0)
+        if control.aborted and flow.killable:
+            flow.kill()
 
     async def response(self, flow: HTTPFlow) -> None:
         entry = flow.metadata.get(METADATA_KEY)
@@ -123,7 +120,7 @@ class TestCaseAddon:
             delay_before = control.response_delay_ms
             try:
                 hook(Request(flow, control), Response(flow, control))
-            except Exception:
+            except _SCRIPT_ERRORS:
                 flow.response.set_state(before)
                 control.response_delay_ms = delay_before
                 self._report_error(case, "on_response", flow)
@@ -169,11 +166,20 @@ class TestCaseAddon:
             module.store = StateStore(Path(active.state_path))
             exec(compile(source, str(script), "exec"), module.__dict__)
             claims = [compile_pattern(p) for p in getattr(module, testplan.CLAIMS_NAME, None) or []]
-        except Exception as exc:
+        except _SCRIPT_ERRORS as exc:
             log.error("Failed to load test case %s: %s", active.label, exc)
             self._write_error(active, "load", None, exc)
             return _LoadedCase(active, None, [], signature)
+        self._clear_error()
         return _LoadedCase(active, module, claims, signature)
+
+    def _clear_error(self) -> None:
+        if self._active_path is None:
+            return
+        try:
+            testplan.error_path(self._active_path).unlink(missing_ok=True)
+        except OSError:
+            log.exception("Failed to clear the previous test case error")
 
     def _report_error(self, case: _LoadedCase, hook: str, flow: HTTPFlow) -> None:
         log.error(
@@ -210,9 +216,26 @@ class TestCaseAddon:
             log.exception("Failed to record test case error")
 
 
+class TestCaseDelayAddon:
+    """Holds a request for request.delay after TrackerAddon captured it.
+
+    Registered after TrackerAddon so the delay never reorders seq numbers
+    or hides an in-flight request from `query recent`.
+    """
+
+    __test__ = False
+
+    async def request(self, flow: HTTPFlow) -> None:
+        entry = flow.metadata.get(METADATA_KEY)
+        if entry is None:
+            return
+        control: FlowControl = entry["control"]
+        if control.aborted or not control.request_delay_ms:
+            return
+        await asyncio.sleep(control.request_delay_ms / 1000.0)
+
+
 def _action(control: FlowControl, modified: bool) -> str:
-    if control.aborted:
-        return ACTION_ABORTED
     if control.responded:
         return ACTION_RESPONDED
     if modified:

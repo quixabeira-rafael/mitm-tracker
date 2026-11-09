@@ -63,15 +63,19 @@ class PlanInfo:
     title: str | None
     description: str | None
     cases: list[str] = field(default_factory=list)
+    error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "name": self.name,
             "path": str(self.path),
             "title": self.title,
             "description": self.description,
             "cases": list(self.cases),
         }
+        if self.error is not None:
+            payload["error"] = self.error
+        return payload
 
 
 @dataclass
@@ -138,8 +142,21 @@ class PlanStore:
             return []
         plans: list[PlanInfo] = []
         for entry in sorted(self._tests_dir.iterdir()):
-            if entry.is_dir() and self.exists(entry.name):
+            if not (entry.is_dir() and self.exists(entry.name)):
+                continue
+            try:
                 plans.append(self.load_plan(entry.name))
+            except TestPlanError as exc:
+                plans.append(
+                    PlanInfo(
+                        name=entry.name,
+                        path=entry,
+                        title=None,
+                        description=None,
+                        cases=self.list_cases(entry.name),
+                        error=str(exc),
+                    )
+                )
         return plans
 
     def load_plan(self, plan: str) -> PlanInfo:
@@ -149,7 +166,7 @@ class PlanStore:
             raise TestPlanError(f"test plan {plan!r} not found")
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise TestPlanError(f"invalid JSON in {path}: {exc}") from exc
         if not isinstance(data, dict):
             raise TestPlanError(f"invalid {PLAN_FILENAME} shape in {path} (expected object)")
@@ -207,7 +224,10 @@ class PlanStore:
 
 
 def inspect_case_source(case: str, path: Path) -> CaseInfo:
-    source = path.read_text(encoding="utf-8")
+    try:
+        source = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise TestPlanError(f"test case {case!r} is not valid UTF-8: {exc}") from exc
     try:
         tree = ast.parse(source, filename=str(path))
         compile(tree, str(path), "exec")
@@ -284,7 +304,7 @@ def read_active(path: Path) -> ActiveTest | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return ActiveTest.from_dict(data)
-    except (json.JSONDecodeError, KeyError, TypeError, OSError):
+    except (ValueError, KeyError, TypeError, OSError):
         return None
 
 
@@ -315,7 +335,7 @@ def read_error(active_path: Path) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
         return None
     return data if isinstance(data, dict) else None
 
