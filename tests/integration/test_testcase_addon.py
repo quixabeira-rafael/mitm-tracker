@@ -10,7 +10,8 @@ from mitmproxy.test import taddons, tflow
 from mitm_tracker import testplan
 from mitm_tracker.addon import TrackerAddon
 from mitm_tracker.maplocal import MapLocalStore
-from mitm_tracker.testcase_addon import HEADER_ACTION, HEADER_TEST, TestCaseAddon
+from mitm_tracker.store import FlowStore
+from mitm_tracker.testcase_addon import HEADER_ACTION, HEADER_TEST, TestCaseAddon, TestCaseDelayAddon
 from mitm_tracker.testplan import ActiveTest, PlanStore
 
 
@@ -19,13 +20,15 @@ pytestmark = pytest.mark.integration
 
 class Harness:
     def __init__(self, tmp_path: Path, db_path: Path) -> None:
+        self.db_path = db_path
         self.profile_dir = tmp_path / "profile"
         self.active_path = tmp_path / "runtime" / "active_test.json"
         self.plans = PlanStore(self.profile_dir)
         self.plans.create_plan("plan")
         self.case_addon = TestCaseAddon()
         self.tracker = TrackerAddon()
-        self.ctx = taddons.context(self.case_addon, self.tracker)
+        self.delay_addon = TestCaseDelayAddon()
+        self.ctx = taddons.context(self.case_addon, self.tracker, self.delay_addon)
         self.ctx.configure(self.case_addon, tracker_active_test_path=str(self.active_path))
         self.ctx.configure(
             self.tracker,
@@ -53,6 +56,7 @@ class Harness:
     async def run(self, flow, *, upstream: bool = True):
         await self.case_addon.request(flow)
         self.tracker.request(flow)
+        await self.delay_addon.request(flow)
         if flow.error is not None:
             return flow
         if flow.response is None and upstream:
@@ -241,3 +245,51 @@ async def test_delays_hold_the_flow(harness: Harness, monkeypatch: pytest.Monkey
     with harness.ctx:
         await harness.run(tflow.tflow(resp=False))
     assert slept == [0.3, 1.5]
+
+
+async def test_system_exit_in_hook_is_contained(harness: Harness) -> None:
+    harness.apply(
+        "exits",
+        "import sys\n"
+        "def on_request(request):\n    sys.exit(1)\n"
+        "def on_response(request, response):\n    exit()\n",
+    )
+    with harness.ctx:
+        flow = await harness.run(tflow.tflow(resp=False))
+    assert flow.response.status_code == 200
+    assert flow.response.headers[HEADER_ACTION] == "passthrough"
+    assert testplan.read_error(harness.active_path)["hook"] == "on_response"
+
+
+async def test_system_exit_at_load_is_contained(harness: Harness) -> None:
+    harness.apply("exits_on_load", "import sys\nsys.exit(2)\ndef on_request(request):\n    pass\n")
+    with harness.ctx:
+        flow = await harness.run(tflow.tflow(resp=False))
+    assert HEADER_TEST not in flow.response.headers
+    assert testplan.read_error(harness.active_path)["hook"] == "load"
+
+
+async def test_error_is_cleared_after_fixed_script_reloads(harness: Harness) -> None:
+    path = harness.apply("fixme", "def on_request(request)\n    pass\n")
+    with harness.ctx:
+        await harness.run(tflow.tflow(resp=False))
+        assert testplan.read_error(harness.active_path) is not None
+
+        path.write_text("def on_request(request):\n    pass\n", encoding="utf-8")
+        await harness.run(tflow.tflow(resp=False))
+    assert testplan.read_error(harness.active_path) is None
+
+
+async def test_request_delay_runs_after_capture(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows_while_sleeping: list[int] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        reader = FlowStore(harness.db_path, read_only=True)
+        rows_while_sleeping.append(reader.count())
+        reader.close()
+
+    monkeypatch.setattr("mitm_tracker.testcase_addon.asyncio.sleep", fake_sleep)
+    harness.apply("slow", "def on_request(request):\n    request.delay = 500\n")
+    with harness.ctx:
+        await harness.run(tflow.tflow(resp=False))
+    assert rows_while_sleeping == [1]

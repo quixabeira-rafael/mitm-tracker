@@ -117,3 +117,23 @@ def test_read_active_ignores_corrupt_file(tmp_path: Path) -> None:
     path = tmp_path / "active_test.json"
     path.write_text("{not json", encoding="utf-8")
     assert testplan.read_active(path) is None
+
+
+def test_list_plans_reports_broken_plan_without_failing(store: PlanStore) -> None:
+    store.create_plan("good")
+    store.create_plan("broken")
+    store.plan_path("broken").write_text("{not json", encoding="utf-8")
+    plans = {p.name: p for p in store.list_plans()}
+    assert plans["good"].error is None
+    assert "invalid JSON" in plans["broken"].error
+    assert plans["broken"].to_dict()["error"]
+
+
+def test_non_utf8_files_raise_test_plan_error(store: PlanStore) -> None:
+    store.create_plan("p")
+    store.plan_path("p").write_bytes(b"\xff\xfe")
+    with pytest.raises(TestPlanError, match="invalid JSON"):
+        store.load_plan("p")
+    store.case_path("p", "c").write_bytes(b"\xff\xfe")
+    with pytest.raises(TestPlanError, match="not valid UTF-8"):
+        testplan.inspect_case_source("c", store.case_path("p", "c"))

@@ -386,7 +386,8 @@ unclaimed request still gets the Map Local mock, and the case's `on_response`
 edits it. To diagnose, run `test status`, `maplocal list`, and
 `query show <seq> --json`: `mocked`/`mock_rule_id` tell whether Map Local
 answered, and the `X-Mitm-Test-Action` response header tells what the case
-did.
+did (an aborted request has no response; it shows `error_msg: "Connection
+killed."`).
 
 ### Simulate a slow network (response delay)
 
@@ -474,11 +475,18 @@ Rules:
   session `--delay`.
 - Every response seen while a case is active carries `X-Mitm-Test:
   <plan>/<case>` and `X-Mitm-Test-Action:
-  responded|modified|aborted|claimed|passthrough`, so captured flows are easy
-  to find with `query`.
-- An exception inside a hook reverts that hook's changes, lets the request
-  through, and is reported by `test status`, `doctor` (Test case row), and the
-  proxy log.
+  responded|modified|claimed|passthrough`, so captured flows are easy
+  to find with `query`. Aborted requests have no response and are captured
+  with `error_msg: "Connection killed."`.
+- An exception inside a hook (including `sys.exit()`) restores the request
+  (`on_request`) or response (`on_response`) to its state before the hook and
+  lets the traffic through; `store` writes made before the raise are kept. It
+  is reported by `test status`, `doctor` (Test case row), and the proxy log,
+  and cleared once the fixed script reloads.
+- Hooks run on the proxy's event loop: blocking calls (`time.sleep`, slow
+  I/O) stall all traffic, so use `request.delay` / `response.delay` for
+  timing. Hooks have no effect on bodies mitmproxy streams
+  (`stream_large_bodies`, which mitm-tracker does not enable).
 - Test cases only live inside a running session: `test apply` fails when the
   proxy is down, `record start` always begins with no active case, and
   `record stop` deactivates it. Script edits hot-reload on the next request.

@@ -240,7 +240,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         emit_text(f"[{profile}] (no test plans)")
         return EXIT_OK
     rows = [
-        {"name": p.name, "cases": len(p.cases), "title": p.title}
+        {"name": p.name, "cases": len(p.cases), "title": f"INVALID ({p.error})" if p.error else p.title}
         for p in plans
     ]
     emit_text(f"[{profile}]")

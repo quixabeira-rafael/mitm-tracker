@@ -170,6 +170,14 @@ def launch_proxy(
         listen_port=port,
         profile=profile,
     ).close()
+    try:
+        testplan.clear_active(workspace.active_test_path)
+    except OSError as exc:
+        raise ProxyLaunchError(
+            "test_state_failed",
+            f"failed to clear the previous active test case: {exc}",
+            exit_code=EXIT_SYSTEM,
+        ) from exc
 
     proxy_service: str | None = None
     if configure_system_proxy:
@@ -194,7 +202,6 @@ def launch_proxy(
     ssl_count = len(ssl_list.entries)
 
     maplocal_dir = workspace.profile_dir(profile)
-    testplan.clear_active(workspace.active_test_path)
 
     no_cache = not keep_cache
     delay_profile = delay or DelayProfile()
@@ -434,7 +441,7 @@ def cmd_stop(args: argparse.Namespace, *, kill: Callable[[int, int], None] | Non
         backup_path.unlink()
 
     sm.clear_pid()
-    testplan.clear_active(workspace.active_test_path)
+    _clear_active_test(workspace)
     instance.release(instance.KIND_PROXY)
     final_state = sm.stop()
 
@@ -623,6 +630,13 @@ def _new_session_db(workspace: Workspace, profile: str) -> Path:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _clear_active_test(workspace: Workspace) -> None:
+    try:
+        testplan.clear_active(workspace.active_test_path)
+    except OSError as exc:
+        emit_text(f"warning: failed to clear the active test case: {exc}", stream=sys.stderr)
 
 
 def _spawn_default(cmd, **kwargs) -> subprocess.Popen:

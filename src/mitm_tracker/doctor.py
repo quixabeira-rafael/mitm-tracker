@@ -536,7 +536,7 @@ def check_active_test() -> CheckResult:
     if error:
         return CheckResult(
             name="Test case",
-            status=STATUS_WARN,
+            status=STATUS_INFO,
             detail=f"{detail}; last {error.get('hook')} error: {error.get('error')}",
             fix=f"fix {active.script_path}, then check `mitm-tracker test status`",
             group="state",
