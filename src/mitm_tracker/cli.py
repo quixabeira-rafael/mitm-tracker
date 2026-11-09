@@ -16,6 +16,7 @@ from mitm_tracker.commands import release as release_commands
 from mitm_tracker.commands import setup as setup_commands
 from mitm_tracker.commands import skill as skill_commands
 from mitm_tracker.commands import ssl as ssl_commands
+from mitm_tracker.commands import test as test_commands
 from mitm_tracker.commands import tray as tray_commands
 from mitm_tracker.output import EXIT_SYSTEM, EXIT_USAGE, emit_error
 
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_commands.register(subparsers)
     ssl_commands.register(subparsers)
     maplocal_commands.register(subparsers)
+    test_commands.register(subparsers)
     cert_commands.register(subparsers)
     record_commands.register(subparsers)
     device_commands.register(subparsers)

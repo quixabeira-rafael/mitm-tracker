@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mitm_tracker import auth_setup, claude_skill, host_ca, instance, tray_launch_agent
+from mitm_tracker import auth_setup, claude_skill, host_ca, instance, testplan, tray_launch_agent
 from mitm_tracker.config import WORKSPACE_DIRNAME, workspace_for
 from mitm_tracker.profile_manager import ProfileError, ProfileManager
 from mitm_tracker.session_manager import SessionManager
@@ -510,6 +510,40 @@ def check_record_session() -> CheckResult:
     return CheckResult(name="Record session", status=STATUS_INFO, detail="not running", group="state")
 
 
+def check_active_test() -> CheckResult:
+    ws = workspace_for()
+    try:
+        running = ws.base.exists() and SessionManager(ws).is_running()
+    except Exception as exc:
+        return CheckResult(
+            name="Test case",
+            status=STATUS_WARN,
+            detail=f"could not read state: {exc}",
+            group="state",
+        )
+    if not running:
+        return CheckResult(
+            name="Test case",
+            status=STATUS_INFO,
+            detail="none (test cases only apply to a running session)",
+            group="state",
+        )
+    active = testplan.read_active(ws.active_test_path)
+    if active is None:
+        return CheckResult(name="Test case", status=STATUS_INFO, detail="none active", group="state")
+    detail = f"{active.label} active (profile {active.profile}, applied {active.applied_at})"
+    error = testplan.read_error(ws.active_test_path)
+    if error:
+        return CheckResult(
+            name="Test case",
+            status=STATUS_WARN,
+            detail=f"{detail}; last {error.get('hook')} error: {error.get('error')}",
+            fix=f"fix {active.script_path}, then check `mitm-tracker test status`",
+            group="state",
+        )
+    return CheckResult(name="Test case", status=STATUS_INFO, detail=detail, group="state")
+
+
 def check_mitmproxy_ca() -> CheckResult:
     ca_path = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
     if not ca_path.exists():
@@ -802,6 +836,7 @@ def run_all_checks() -> list[CheckResult]:
         check_single_instance(),
         check_active_profile_ssl_list(),
         check_record_session(),
+        check_active_test(),
         check_vpn_active(),
         check_lan_proxy(),
         check_lan_reachable(),

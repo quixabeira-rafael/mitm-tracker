@@ -591,3 +591,65 @@ def test_check_single_instance_warns_when_another_workspace_owns_it(
     result = doctor.check_single_instance()
     assert result.status == doctor.STATUS_WARN
     assert str(other) in result.fix
+
+
+def _active_test_workspace(tmp_repo: Path, monkeypatch, *, running: bool):
+    from mitm_tracker.config import workspace_for
+    from mitm_tracker.session_manager import SessionManager
+
+    ws = workspace_for(tmp_repo)
+    ws.ensure()
+    monkeypatch.setattr(SessionManager, "is_running", lambda self: running)
+    return ws
+
+
+def _write_active(ws) -> None:
+    from mitm_tracker import testplan
+
+    testplan.write_active(
+        ws.active_test_path,
+        testplan.ActiveTest(
+            profile="default",
+            plan="demo",
+            case="returns_400",
+            script_path="/x/returns_400.py",
+            state_path="/x/state.json",
+            applied_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+
+
+def test_check_active_test_when_proxy_not_running(tmp_repo, monkeypatch) -> None:
+    ws = _active_test_workspace(tmp_repo, monkeypatch, running=False)
+    _write_active(ws)
+    result = doctor.check_active_test()
+    assert result.status == doctor.STATUS_INFO
+    assert result.detail.startswith("none")
+
+
+def test_check_active_test_none_active(tmp_repo, monkeypatch) -> None:
+    _active_test_workspace(tmp_repo, monkeypatch, running=True)
+    result = doctor.check_active_test()
+    assert result.status == doctor.STATUS_INFO
+    assert result.detail == "none active"
+
+
+def test_check_active_test_reports_label(tmp_repo, monkeypatch) -> None:
+    ws = _active_test_workspace(tmp_repo, monkeypatch, running=True)
+    _write_active(ws)
+    result = doctor.check_active_test()
+    assert result.status == doctor.STATUS_INFO
+    assert "demo/returns_400 active" in result.detail
+    assert result.group == "state"
+
+
+def test_check_active_test_warns_on_last_error(tmp_repo, monkeypatch) -> None:
+    from mitm_tracker import testplan
+
+    ws = _active_test_workspace(tmp_repo, monkeypatch, running=True)
+    _write_active(ws)
+    testplan.record_error(ws.active_test_path, {"hook": "on_response", "error": "RuntimeError: boom"})
+    result = doctor.check_active_test()
+    assert result.status == doctor.STATUS_WARN
+    assert "RuntimeError: boom" in result.detail
+    assert "/x/returns_400.py" in result.fix

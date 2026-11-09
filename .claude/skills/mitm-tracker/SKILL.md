@@ -1,6 +1,6 @@
 ---
 name: mitm-tracker
-description: Inspect, mock, or reproduce HTTP/HTTPS traffic from a macOS app or iOS Simulator using the mitm-tracker CLI. Use when the user asks to capture network requests, list hosts/APIs the app calls, see what an endpoint returns, override a response with a local file (Map Local), reproduce a captured request as curl, debug TLS-decrypted traffic, set up Touch ID for the proxy, configure the menu-bar tray, or diagnose why mitm-tracker isn't working. Trigger phrases include "what APIs is the app calling", "intercept", "mock this response", "see the request body", "record traffic", "override endpoint", "Map Local", "decrypt HTTPS", "set up Touch ID for record", "tray icon", "mitm-tracker doctor", "why is the proxy broken", or any reference to mitmproxy/Charles Proxy in this workflow.
+description: Inspect, mock, or reproduce HTTP/HTTPS traffic from a macOS app or iOS Simulator using the mitm-tracker CLI. Use when the user asks to capture network requests, list hosts/APIs the app calls, see what an endpoint returns, override a response with a local file (Map Local), script test scenarios with test plans (force status codes, random failures, endpoint ordering, dropped connections), reproduce a captured request as curl, debug TLS-decrypted traffic, set up Touch ID for the proxy, configure the menu-bar tray, or diagnose why mitm-tracker isn't working. Trigger phrases include "what APIs is the app calling", "intercept", "mock this response", "see the request body", "record traffic", "override endpoint", "Map Local", "test plan", "test case", "make this endpoint fail", "endpoint A before B", "decrypt HTTPS", "set up Touch ID for record", "tray icon", "mitm-tracker doctor", "why is the proxy broken", or any reference to mitmproxy/Charles Proxy in this workflow.
 ---
 
 # mitm-tracker
@@ -9,7 +9,7 @@ CLI on top of `mitmproxy` that captures HTTP(S) flows into per-session SQLite, s
 
 ## Mental model (read first)
 
-Eight facts that are not obvious from `--help`:
+Nine facts that are not obvious from `--help`:
 
 1. **One workspace per project, owned by the main repository.** `mitm-tracker` resolves `.mitm-tracker/` from `git rev-parse --git-common-dir`, so a worktree, a subdirectory, and the main checkout all share the same SSL list, profiles, and `state.json`. Outside a git repo it falls back to the nearest ancestor that already has a `.mitm-tracker/`, then to the cwd. `MITM_TRACKER_ROOT` overrides where resolution starts. You no longer need to `cd` to the project root, and a worktree can no longer strand its own empty workspace — but a leftover `.mitm-tracker/` from before this behavior is now ignored, and `doctor` warns about it.
 
@@ -27,6 +27,8 @@ Eight facts that are not obvious from `--help`:
 
 8. **Decrypting HTTPS from the Mac host requires a separate, more dangerous step.** `mitm-tracker cert install` only trusts the CA inside iOS Simulators. To intercept Safari / native apps / OS processes you must run `mitm-tracker cert host install` — this trusts the mitmproxy CA system-wide on the Mac, for ALL TLS connections (App Store, OS updates, everything). Always reverse it with `mitm-tracker cert host uninstall` when done. The matching private key at `~/.mitmproxy/mitmproxy-ca.pem` becomes a high-value file while host trust is active. The command auto-replaces stale managed CAs (handles the regen scenario from #5), only removes what we installed at uninstall time, and runs `security verify-cert -p ssl` to confirm the trust setting actually took effect.
 
+9. **Test cases live only inside a running session, but their scripts and store persist.** A test case is applied to the *running* proxy (`test apply`), hot-reloads on script edits, and wins over Map Local only for claimed requests. Every `record start` begins with no active case and `record stop` deactivates it, so re-apply after a restart. The plan files (`tests/<plan>/`) and the per-plan key/value store (`state.json`) are never touched by start/stop/apply — reset the store explicitly with `test state clear`.
+
 ## When to invoke this skill
 
 - "What endpoints is this app hitting?" → `query hosts`, `query recent`
@@ -37,6 +39,7 @@ Eight facts that are not obvious from `--help`:
 - "Capture traffic from a real iPhone / physical device" → `device start` (Workflow A2)
 - "I added a new SSL host but I don't see it decrypted" → restart record (gotcha #3)
 - "Simulate a slow network / add latency / make the API slow" → `record start --delay 800ms --delay-jitter 200ms` (Workflow C2)
+- "Make endpoint X return 400 / fail randomly / arrive after Y / drop the connection" → test plan + case, then `test apply` (Workflow C3)
 
 ## Workflow A — first-time setup in a new project
 
@@ -110,6 +113,8 @@ mitm-tracker maplocal remove <id>   # also deletes body + headers files
 
 The addon strips length-dependent headers (`Content-Length`, `ETag`, `Last-Modified`, `Transfer-Encoding`, `Content-Encoding`) on synthesized responses, so editing the body never desyncs the wire format. Cache headers are also rewritten so the client cannot serve a stale copy.
 
+**Conflict with test cases (Workflow C3).** While a test case is active, it runs before Map Local and can override it: a request the case **claims** (`CLAIMS`, `request.claim()`, `request.respond()`, `request.abort()`) skips Map Local entirely. An unclaimed request still gets the Map Local mock, and the case's `on_response` then edits that mock. So a rule that "stopped working" may be shadowed by the active case, and a case result built on an unexpected body may be editing a mock. Check: `mitm-tracker test status` (is a case active?), `mitm-tracker maplocal list` (enabled rules), and `mitm-tracker query show <seq> --json` — `mocked`/`mock_rule_id` say whether Map Local answered, and the `X-Mitm-Test-Action` response header (`claimed`, `responded`, `aborted`, `modified`, `passthrough`) says what the case did.
+
 ## Workflow C2 — simulate a slow network (response delay)
 
 ```bash
@@ -121,6 +126,47 @@ mitm-tracker record status                                     # shows the activ
 `--delay` takes bare milliseconds (`800`), an explicit unit (`800ms`) or seconds (`1.5s`), capped at `120000ms`. `--delay-jitter` is a symmetric spread that requires `--delay` and clamps at `0` on the low end. Both flags also exist on `device start`. Invalid values fail fast with `{"error": "invalid_delay"}` and exit 2 — the proxy is never spawned.
 
 The delay lands in the `responseheaders` hook, before the body is forwarded, so it applies to upstream responses **and** Map Local mocks with one setting. Combine the two to mock a payload *and* make it slow. See mental model #6 for the restart requirement and the timing caveat.
+
+## Workflow C3 — scripted scenarios (test plans)
+
+A test plan (`plan.json`: title + description) groups test cases; each case is a Python file whose module docstring is its description.
+
+```bash
+mitm-tracker test new --test checkout --title "Checkout" --description "Cart and payment flows"
+mitm-tracker test new-case --test checkout --test-case cart_returns_400 --description "Cart returns 400"
+# edit .mitm-tracker/profiles/<profile>/tests/checkout/cart_returns_400.py
+mitm-tracker test apply --test checkout --test-case cart_returns_400   # requires a running session
+mitm-tracker test status --json        # active case + last script error
+mitm-tracker test clear
+mitm-tracker test show --test checkout --json
+mitm-tracker test state show --test checkout   # / state clear
+```
+
+```python
+"""Cart fails once with 503; orders arrives 1.5s late."""
+CLAIMS = ["https://api.example.com/cart/**"]   # literal list, Map Local pattern syntax; claimed URLs skip Map Local
+
+def on_request(request):                      # before Map Local and the server
+    if request.path == "/cart" and store.incr("cart_calls") == 1:
+        request.respond(503, json={"error": "unavailable"})   # local answer, server never called
+
+def on_response(request, response):           # every response: local, Map Local, upstream
+    if request.path == "/orders":
+        response.delay = 1500
+```
+
+- `request`: `method`, `path`, `host`, `url`, `scheme`, `port`, `query`, `headers`, `body`/`text`/`json` (get/set), `delay` (ms, before upstream), `matches(pattern)`, `claim()`, `respond(status, headers=, body=|json=, delay=)`, `abort()` (drops the connection).
+- `response`: `status` (reason phrase auto-set), `headers`, `body`/`text`/`json`, `delay` (ms, before the app gets it).
+- `store` (injected global, no import): `get/set/incr/delete/clear/all`, shared by every case of the plan, persisted as readable JSON in `tests/<plan>/state.json`, safe across threads and processes. Never reset by `apply` or restarts — use `test state clear`.
+- `mitm-tracker test api --json` prints the full, always-current script API (hooks, globals, request/response/store, pipeline, rules). Read it before writing a non-trivial case.
+- Per-request pipeline: `CLAIMS` match → `on_request` → `request.delay` → Map Local (skipped when claimed) → server (skipped after `respond()`/`abort()`) → `on_response` → `response.delay` + session `--delay`.
+- **Conflict with Map Local (Workflow C).** Test cases win over Map Local only for claimed requests (`CLAIMS`, `claim()`, `respond()`, `abort()`): those skip Map Local. Unclaimed requests still get the Map Local mock and `on_response` edits it. When a case or a Map Local rule behaves unexpectedly, check `test status`, `maplocal list`, and `query show <seq> --json` (`mocked`/`mock_rule_id` + the `X-Mitm-Test-Action` header). To make the case own a URL, add it to `CLAIMS`; to let a Map Local rule through, remove it from `CLAIMS` or stop claiming it.
+- Responses carry `X-Mitm-Test: <plan>/<case>` and `X-Mitm-Test-Action: responded|modified|aborted|claimed|passthrough` — filter captured flows on them.
+- Session-only (mental model #9): `test apply` fails with `not_running` when the proxy is down; `record start` begins with no case; `record stop` clears it. Script edits hot-reload on the next request (module globals reset, `store` does not).
+- Hooks are plain `def` (not `async def`). `CLAIMS` must be a literal list — `apply` validates it without running the script.
+- A hook exception reverts that hook's changes, lets traffic through, and shows up in `test status` (`last_error`), `doctor` (Test case row) and `record logs`.
+
+Validate a case in the Simulator: the app must call a **hostname**, not `localhost` or a private IP literal — `URLSession` skips the system proxy for those (gotcha below). `examples/ios-demo/` in the mitm-tracker repo ships a SwiftUI app, an upstream `server.py` and a sample plan that display arrival order, status and the `X-Mitm-Test*` headers per endpoint.
 
 ## Workflow D — reproduce a captured request
 
@@ -171,6 +217,7 @@ Other actions:
 | `profile {create,use,list,show,delete}` | Profile lifecycle (each has own SSL list + Map Local rules) | `--use` on create activates immediately |
 | `ssl {add,remove,list}` | Manage TLS-decryption hosts for a profile | `--profile <name>` to target a non-active profile |
 | `maplocal {add,from-flow,list,show,edit,enable,disable,remove}` | Local response overrides | `from-flow <seq>` clones a captured response |
+| `test {list,show,new,new-case,apply,clear,status,api,state}` | Scripted test plans (Workflow C3) | `--test <plan>`, `--test-case <case>`; `apply` needs a running session; `api --json` prints the script API; `state {show,clear}` |
 | `cert {install,status,simulators}` | Install mitmproxy CA into booted simulator(s) | iOS 26 uses `TrustStore.sqlite3` (sha256); legacy keychain (sha1) still supported |
 | `cert host {install,uninstall,status}` | Trust the mitmproxy CA system-wide on the Mac (DANGEROUS) | Run `--yes` to skip the confirmation banner, `--force` to re-run when previous attempt left trust missing. Always reverse with `cert host uninstall` |
 | `record {start,stop,status,logs}` | Capture session lifecycle | `--keep-cache` to disable the default cache-stripping; `--port N` to override 8080; `--delay 800ms` + `--delay-jitter 200ms` to throttle every response (session-wide, needs a restart to change); `--no-tray` to not open the menu bar tray |
@@ -209,6 +256,11 @@ Run `mitm-tracker doctor` first. It tells you exactly what's missing and gives t
 - **Apex domain not matched** → `*.example.com` does not cover `example.com`. Add both.
 - **`--delay` seems to have no effect / changing it did nothing** → the flag is read at spawn time. `record status` reports the delay actually in force; if it says `off` or the old window, run `record stop && record start --delay ...`.
 - **Captured `duration_total_ms` looks inflated** → check `record status` for an active delay and subtract it. The throttle is applied before the response leaves the proxy, so it is inside the measured duration.
+- **Simulator/Mac app traffic to `localhost` or `192.168.x.x` never shows up in `query recent`** → `URLSession` bypasses the macOS system proxy for `localhost` and private IP literals, even though they are not in the proxy exception list. Point the app at a hostname that resolves to the same address (e.g. `<lan-ip>.nip.io`). Plain `curl -x` does go through, so it is not a valid check for this.
+- **`test apply` fails with `not_running`** → test cases only exist inside a running session. `record start` (or `device start`) first, then apply. After any restart, re-apply — `record start` always begins with no case.
+- **Test case applied but nothing changes** → check `mitm-tracker test status` / `doctor` for a `last_error` (a failing hook is reverted and traffic passes through), confirm the request reaches the proxy at all (`query recent`, and the hostname gotcha above), and compare `request.path` — it excludes the query string.
+- **Map Local still answers a URL the test case handles in `on_response`** → only claimed requests skip Map Local. Add the URL to `CLAIMS` or call `request.claim()` in `on_request`.
+- **A Map Local rule stopped working (rule enabled, URL matches)** → an active test case may be claiming that URL. `test status` shows the active case; `query show <seq> --json` will have `mocked: 0` and an `X-Mitm-Test-Action` response header of `claimed`/`responded`/`aborted`. `test clear`, or remove the URL from the case's `CLAIMS`.
 - **Cert install on a non-booted simulator** → `cert install` only targets booted devices. Boot the simulator first (`xcrun simctl boot <udid>`).
 - **App's TLS suddenly broke after a cleanup** → the mitmproxy CA was likely regenerated. Run `mitm-tracker cert install` to push the new CA. See mental model #5.
 - **`record stop` returned exit 0 but the system proxy is still on `127.0.0.1:8080`** → no, it doesn't anymore: the new code returns `EXIT_SYSTEM` on partial failure and emits a structured error on stderr that the tray surfaces as `rumps.alert`. If you still see this, the user is running an old build — `pipx reinstall mitm-tracker` and re-run `setup install`.
@@ -227,6 +279,7 @@ Each profile owns its own:
 - `profiles/<name>/ssl.json` — TLS decryption list
 - `profiles/<name>/maplocal.json` — Map Local rules
 - `profiles/<name>/maplocal-bodies/` — response bodies + per-rule headers
+- `profiles/<name>/tests/<plan>/` — test plan (`plan.json`, `<case>.py`, `state.json`)
 
 Switching profiles (`profile use <name>`) does **not** restart the running record. The SSL list of the *currently running* mitmdump is whatever was active at `record start`. To apply a new profile to live capture: `record stop && record start` (after `profile use`).
 
